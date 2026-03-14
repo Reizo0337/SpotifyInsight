@@ -12,14 +12,23 @@ class DataService:
         "danceability", "energy", "tempo", "valence", "acousticness", 
         "instrumentalness", "speechiness", "loudness", "key", "mode"
     ]
+    
+    _library_cache = None
+    _library_mtime = 0
 
     @staticmethod
     def load_library():
-        """Loads all unique tracks with their audio features."""
+        """Loads all unique tracks with their audio features (with memory caching)."""
         if not os.path.exists(LIBRARY_PATH):
-            return pd.DataFrame()
+            return pd.DataFrame(columns=DataService.COLUMNS_ORDER)
         
         try:
+            # Check if cache is fresh
+            current_mtime = os.path.getmtime(LIBRARY_PATH)
+            if DataService._library_cache is not None and current_mtime <= DataService._library_mtime:
+                return DataService._library_cache
+
+            print(f"Loading library from disk ({round(os.path.getsize(LIBRARY_PATH)/1024/1024, 2)} MB)...")
             df = pd.read_csv(LIBRARY_PATH)
             
             # Map legacy names if they appear
@@ -48,6 +57,10 @@ class DataService:
             ]
             for col in numeric_cols:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+            
+            # Update cache
+            DataService._library_cache = df
+            DataService._library_mtime = current_mtime
             
             return df
         except Exception as e:
@@ -82,13 +95,17 @@ class DataService:
 
     @staticmethod
     def save_library(df):
-        """Saves unique track metadata to library."""
+        """Saves unique track metadata to library and updates cache."""
         if df.empty:
             return
             
         # Ensure correct order before saving
         df = df[DataService.COLUMNS_ORDER]
         df.drop_duplicates(subset=["spotify_id"]).to_csv(LIBRARY_PATH, index=False)
+        
+        # Update cache to avoid reload
+        DataService._library_cache = df
+        DataService._library_mtime = os.path.getmtime(LIBRARY_PATH)
 
     @staticmethod
     def save_user_tracks(df):
@@ -97,111 +114,106 @@ class DataService:
 
     @staticmethod
     def append_new_tracks(new_tracks, user_name="DefaultUser", user_id="Unknown"):
-        """Adds new tracks to both library and user history, then heals missing features."""
+        """Adds new tracks to both library and user history with batch optimization."""
         library_df = DataService.load_library()
         new_df = pd.DataFrame(new_tracks)
         
-        # 1. Update Library (Universal metadata)
-        if library_df.empty:
-            updated_library = new_df
-        else:
-            updated_library = pd.concat([library_df, new_df]).drop_duplicates(
-                subset=["spotify_id"], 
-                keep="last"
+        if new_df.empty:
+            return library_df
+            
+        # 1. Update Library efficiently
+        # Use a set for O(1) lookups
+        existing_ids = set()
+        if not library_df.empty:
+            existing_ids = set(library_df["spotify_id"].values)
+        
+        # Identify TRULY new tracks that aren't in our 5M+ library
+        truly_new_tracks = new_df[~new_df["spotify_id"].isin(existing_ids)].copy()
+        
+        if not truly_new_tracks.empty:
+            print(f"Found {len(truly_new_tracks)} new tracks to enrich...")
+            from .spotify_service import SpotifyService
+            sp = SpotifyService()
+            
+            # Batch enrichment via Spotify API (100 tracks per request)
+            enriched_list = []
+            new_ids = truly_new_tracks["spotify_id"].tolist()
+            
+            for i in range(0, len(new_ids), 100):
+                batch_ids = new_ids[i:i+100]
+                try:
+                    af_list = sp.sp.audio_features(batch_ids)
+                    for idx, af in enumerate(af_list):
+                        original_row = truly_new_tracks.iloc[i + idx].to_dict()
+                        if af:
+                            # Merge Spotify features
+                            features = {
+                                "danceability": af.get("danceability", 0),
+                                "energy": af.get("energy", 0),
+                                "tempo": af.get("tempo", 0),
+                                "valence": af.get("valence", 0),
+                                "acousticness": af.get("acousticness", 0),
+                                "instrumentalness": af.get("instrumentalness", 0),
+                                "speechiness": af.get("speechiness", 0),
+                                "loudness": af.get("loudness", 0),
+                                "key": af.get("key", 0),
+                                "mode": af.get("mode", 0)
+                            }
+                            enriched_list.append({**original_row, **features})
+                        else:
+                            enriched_list.append(original_row)
+                except Exception as e:
+                    print(f"Batch enrichment error: {e}")
+                    # Keep original rows without features if it fails
+                    for j in range(len(batch_ids)):
+                        enriched_list.append(truly_new_tracks.iloc[i+j].to_dict())
+            
+            # Combine with library
+            enriched_df = pd.DataFrame(enriched_list)
+            # Ensure order
+            for col in DataService.COLUMNS_ORDER:
+                if col not in enriched_df.columns:
+                    enriched_df[col] = 0 if col in ["popularity", "key", "mode"] else "Unknown"
+            
+            library_df = pd.concat([library_df, enriched_df[DataService.COLUMNS_ORDER]]).drop_duplicates(
+                subset=["spotify_id"], keep="last"
             ).reset_index(drop=True)
+            
+            DataService.save_library(library_df)
         
         # 2. Update User History (FILTERED)
         if os.path.exists(USER_TRACKS_PATH):
             try:
                 user_history = pd.read_csv(USER_TRACKS_PATH)
-            except pd.errors.EmptyDataError:
+            except Exception:
                 user_history = pd.DataFrame(columns=["user_id", "user_name", "spotify_id", "track_name"])
         else:
             user_history = pd.DataFrame(columns=["user_id", "user_name", "spotify_id", "track_name"])
         
-        # Filter out tracks this specific user already has in history
-        # Combine user_id and spotify_id to check for existing pairs
         existing_user_tracks = set()
         if not user_history.empty:
-            existing_user_tracks = set(zip(user_history["user_id"], user_history["spotify_id"]))
+            existing_user_tracks = set(zip(user_history["user_id"].astype(str), user_history["spotify_id"].astype(str)))
 
-        # Only add mappings that don't exist yet for this user
-        new_mappings_list = []
+        new_mappings = []
         for _, row in new_df.iterrows():
-            if (user_id, row["spotify_id"]) not in existing_user_tracks:
-                new_mappings_list.append({
+            if (str(user_id), str(row["spotify_id"])) not in existing_user_tracks:
+                new_mappings.append({
                     "user_id": user_id,
                     "user_name": user_name,
                     "spotify_id": row["spotify_id"],
                     "track_name": row["track_name"]
                 })
         
-        if new_mappings_list:
-            new_user_mappings = pd.DataFrame(new_mappings_list)
-            updated_user_history = pd.concat([user_history, new_user_mappings]).reset_index(drop=True)
-            print(f"Added {len(new_mappings_list)} new records to user history.")
-        else:
-            updated_user_history = user_history
-            print("No new tracks to add to user history.")
+        if new_mappings:
+            new_hist_df = pd.DataFrame(new_mappings)
+            user_history = pd.concat([user_history, new_hist_df]).reset_index(drop=True)
+            DataService.save_user_tracks(user_history)
+            print(f"Added {len(new_mappings)} new tracks to history for {user_name}")
 
-        # 3. Heal Library
-        from .audio_analysis_service import AudioAnalysisService
-        from .spotify_service import SpotifyService
-
-        # We only try to heal if the track actually NEEDS fixing (energy/danceability == 0)
-        mask_to_analyze = (updated_library["energy"] == 0) | (updated_library["danceability"] == 0)
-        # IMPORTANT: We only fixed tracks that were part of the current sync OR need fix
-        to_analyze = updated_library[mask_to_analyze].head(20)
-        
-        if not to_analyze.empty:
-            print(f"Analyzing {len(to_analyze)} tracks in library...")
-            sp = SpotifyService()
-            for idx, row in to_analyze.iterrows():
-                # Avoid re-analyzing if we already have it in a separate check (metadata might have been updated)
-                # but here 'idx' is correct for 'updated_library'
-                
-                # 1. Try Spotify Official Features first
-                features = None
-                try:
-                    af = sp.sp.audio_features([row["spotify_id"]])
-                    if af and af[0]:
-                        features = {
-                            "danceability": af[0].get("danceability"),
-                            "energy": af[0].get("energy"),
-                            "tempo": af[0].get("tempo"),
-                            "valence": af[0].get("valence"),
-                            "acousticness": af[0].get("acousticness"),
-                            "instrumentalness": af[0].get("instrumentalness"),
-                            "speechiness": af[0].get("speechiness"),
-                            "loudness": af[0].get("loudness"),
-                            "key": af[0].get("key"),
-                            "mode": af[0].get("mode")
-                        }
-                except Exception:
-                    pass
-
-                # 2. Fallback to Local Analysis
-                if not features:
-                    track_info = sp.sp.track(row["spotify_id"])
-                    preview_url = track_info.get("preview_url")
-                    
-                    if not preview_url:
-                        preview_url = AudioAnalysisService.get_preview_from_itunes(row["track_name"], row["artist"])
-                    
-                    if preview_url:
-                        features = AudioAnalysisService.analyze_preview(preview_url)
-                
-                if features:
-                    for key, val in features.items():
-                        if key in updated_library.columns:
-                            updated_library.at[idx, key] = val
-        
-        # Final Saves
-        DataService.save_library(updated_library)
-        DataService.save_user_tracks(updated_user_history)
-        
-        # Return the joined view for the frontend
-        return pd.merge(updated_user_history[updated_user_history["user_id"] == user_id], updated_library, on="spotify_id", how="inner")
+        # Return joined view for the specific user (Filtered to avoid huge join)
+        # We only return the last 100 for immediate UI feedback to keep it fast
+        current_user_history = user_history[user_history["user_id"] == user_id].tail(100)
+        return pd.merge(current_user_history, library_df, on="spotify_id", how="inner")
 
     @staticmethod
     def persist_track(track_data):
