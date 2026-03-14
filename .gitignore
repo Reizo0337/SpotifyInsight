@@ -1,0 +1,7 @@
+agent/
+__pycache__
+.agent/
+.venv/
+.env
+.cache
+*.csv
