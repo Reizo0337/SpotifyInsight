@@ -90,6 +90,46 @@ async def get_recommendations(limit: int = 10, song: str = None):
             
     return recs
 
+@router.get("/analyze-track")
+async def analyze_track(song: str, artist: str = ""):
+    spotify = SpotifyService()
+    if not spotify.is_connected():
+        raise HTTPException(status_code=503, detail="Spotify disconnected")
+
+    # 1. Search for track to get preview_url
+    query = f"{song} {artist}"
+    track = spotify.search_track(query)
+    
+    if not track:
+        raise HTTPException(status_code=404, detail="Track not found")
+
+    from ..services.audio_analysis_service import AudioAnalysisService
+    preview_url = track.get("preview_url")
+    
+    # Si Spotify no tiene preview, intentamos iTunes
+    if not preview_url:
+        print(f"Spotify preview missing for {track['name']}, trying iTunes...")
+        preview_url = AudioAnalysisService.get_preview_from_itunes(track["name"], track["artist"])
+
+    if not preview_url:
+        return {
+            "error": "No preview available for this track on Spotify or iTunes.",
+            "suggestions": [f"Try searching for a different version of {song}", "Check if the song is available in your region"]
+        }
+
+    # 2. Analyze audio
+    analysis = AudioAnalysisService.analyze_preview(preview_url)
+
+    if not analysis:
+        raise HTTPException(status_code=500, detail="Could not analyze audio preview")
+
+    return {
+        "song_name": track["name"],
+        "artist": track["artist"],
+        "spotify_id": track["id"],
+        **analysis
+    }
+
 @router.get("/user-profile")
 async def get_user_profile():
     df = DataService.load_data()

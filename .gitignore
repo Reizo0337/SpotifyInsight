@@ -5,3 +5,5 @@ __pycache__
 .env
 .cache
 *.csv
+*.m4a
+*.mp3

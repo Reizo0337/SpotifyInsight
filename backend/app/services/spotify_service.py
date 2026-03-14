@@ -122,7 +122,8 @@ class SpotifyService:
                 "name": t["name"],
                 "artist": t["artists"][0]["name"],
                 "id": t["id"],
-                "artist_id": t["artists"][0]["id"]
+                "artist_id": t["artists"][0]["id"],
+                "preview_url": t.get("preview_url")
             }
         return None
 
