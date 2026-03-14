@@ -7,6 +7,12 @@ LIBRARY_PATH = os.path.join(BASE_DATA_DIR, "saved_tracks.csv")
 USER_TRACKS_PATH = os.path.join(BASE_DATA_DIR, "user_tracks.csv")
 
 class DataService:
+    COLUMNS_ORDER = [
+        "spotify_id", "track_name", "artist", "artist_id", "album", "popularity", "genre",
+        "danceability", "energy", "tempo", "valence", "acousticness", 
+        "instrumentalness", "speechiness", "loudness", "key", "mode"
+    ]
+
     @staticmethod
     def load_library():
         """Loads all unique tracks with their audio features."""
@@ -22,20 +28,26 @@ class DataService:
                 "Artist/Detail": "artist"
             })
             
-            # Ensure proper types for audio features
-            float_features = [
-                "danceability", "energy", "tempo", "valence", 
-                "acousticness", "instrumentalness", "speechiness", "loudness"
-            ]
-            for col in float_features:
+            # Ensure all columns exist and are in the correct order
+            for col in DataService.COLUMNS_ORDER:
                 if col not in df.columns:
-                    df[col] = 0.0
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0).astype(float)
+                    if col in ["danceability", "energy", "tempo", "valence", "acousticness", 
+                              "instrumentalness", "speechiness", "loudness", "popularity", "key", "mode"]:
+                        df[col] = 0.0
+                    else:
+                        df[col] = "Unknown"
             
-            # Ensure other required columns
-            for col in ["popularity", "spotify_id", "artist_id", "genre", "key", "mode"]:
-                if col not in df.columns:
-                    df[col] = 0 if col in ["popularity", "key", "mode"] else "Unknown"
+            # Reorder
+            df = df[DataService.COLUMNS_ORDER]
+
+            # Force numeric types for features to avoid "Unknown" strings in numeric columns
+            numeric_cols = [
+                "danceability", "energy", "tempo", "valence", 
+                "acousticness", "instrumentalness", "speechiness", "loudness",
+                "popularity", "key", "mode"
+            ]
+            for col in numeric_cols:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
             
             return df
         except Exception as e:
@@ -43,20 +55,26 @@ class DataService:
             return pd.DataFrame()
 
     @staticmethod
-    def load_data(user_name="DefaultUser"):
+    def load_data(user_id=None):
         """Loads a specific user's tracks joined with library metadata."""
         if not os.path.exists(USER_TRACKS_PATH):
             return pd.DataFrame()
         
         try:
             user_df = pd.read_csv(USER_TRACKS_PATH)
-            user_df = user_df[user_df["user_name"] == user_name]
+            if user_id:
+                # Prioritize user_id if provided
+                user_df = user_df[user_df["user_id"] == user_id]
             
             library_df = DataService.load_library()
             if library_df.empty:
                 return pd.DataFrame()
             
             # Join user track list with full metadata
+            # We drop duplicated track_name from user_df because it exists in library
+            if "track_name" in user_df.columns and "track_name" in library_df.columns:
+                user_df = user_df.drop(columns=["track_name"])
+
             return pd.merge(user_df, library_df, on="spotify_id", how="inner")
         except Exception as e:
             print(f"Error loading user data: {e}")
@@ -65,6 +83,11 @@ class DataService:
     @staticmethod
     def save_library(df):
         """Saves unique track metadata to library."""
+        if df.empty:
+            return
+            
+        # Ensure correct order before saving
+        df = df[DataService.COLUMNS_ORDER]
         df.drop_duplicates(subset=["spotify_id"]).to_csv(LIBRARY_PATH, index=False)
 
     @staticmethod
@@ -73,7 +96,7 @@ class DataService:
         df.to_csv(USER_TRACKS_PATH, index=False)
 
     @staticmethod
-    def append_new_tracks(new_tracks, user_name="DefaultUser"):
+    def append_new_tracks(new_tracks, user_name="DefaultUser", user_id="Unknown"):
         """Adds new tracks to both library and user history, then heals missing features."""
         library_df = DataService.load_library()
         new_df = pd.DataFrame(new_tracks)
@@ -87,26 +110,47 @@ class DataService:
                 keep="last"
             ).reset_index(drop=True)
         
-        # 2. Update User History
-        user_history = pd.read_csv(USER_TRACKS_PATH) if os.path.exists(USER_TRACKS_PATH) else pd.DataFrame(columns=["user_name", "spotify_id"])
+        # 2. Update User History (FILTERED)
+        if os.path.exists(USER_TRACKS_PATH):
+            try:
+                user_history = pd.read_csv(USER_TRACKS_PATH)
+            except pd.errors.EmptyDataError:
+                user_history = pd.DataFrame(columns=["user_id", "user_name", "spotify_id", "track_name"])
+        else:
+            user_history = pd.DataFrame(columns=["user_id", "user_name", "spotify_id", "track_name"])
         
-        new_user_mappings = pd.DataFrame({
-            "user_name": [user_name] * len(new_df),
-            "spotify_id": new_df["spotify_id"]
-        })
+        # Filter out tracks this specific user already has in history
+        # Combine user_id and spotify_id to check for existing pairs
+        existing_user_tracks = set()
+        if not user_history.empty:
+            existing_user_tracks = set(zip(user_history["user_id"], user_history["spotify_id"]))
+
+        # Only add mappings that don't exist yet for this user
+        new_mappings_list = []
+        for _, row in new_df.iterrows():
+            if (user_id, row["spotify_id"]) not in existing_user_tracks:
+                new_mappings_list.append({
+                    "user_id": user_id,
+                    "user_name": user_name,
+                    "spotify_id": row["spotify_id"],
+                    "track_name": row["track_name"]
+                })
         
-        updated_user_history = pd.concat([user_history, new_user_mappings]).drop_duplicates(
-            subset=["user_name", "spotify_id"],
-            keep="last"
-        ).reset_index(drop=True)
-        
-        # 3. Heal Library (only analysis needed for tracks with 0s)
+        if new_mappings_list:
+            new_user_mappings = pd.DataFrame(new_mappings_list)
+            updated_user_history = pd.concat([user_history, new_user_mappings]).reset_index(drop=True)
+            print(f"Added {len(new_mappings_list)} new records to user history.")
+        else:
+            updated_user_history = user_history
+            print("No new tracks to add to user history.")
+
+        # 3. Heal Library
         from .audio_analysis_service import AudioAnalysisService
         from .spotify_service import SpotifyService
-        
-        # We search FOR ALL tracks in library that need fixing, in case some were added before
+
+        # We only try to heal if the track actually NEEDS fixing (energy/danceability == 0)
         mask_to_analyze = (updated_library["energy"] == 0) | (updated_library["danceability"] == 0)
-        # We only fix tracks that actually exist in the library dataset
+        # IMPORTANT: We only fixed tracks that were part of the current sync OR need fix
         to_analyze = updated_library[mask_to_analyze].head(20)
         
         if not to_analyze.empty:
@@ -157,7 +201,7 @@ class DataService:
         DataService.save_user_tracks(updated_user_history)
         
         # Return the joined view for the frontend
-        return pd.merge(updated_user_history[updated_user_history["user_name"] == user_name], updated_library, on="spotify_id", how="inner")
+        return pd.merge(updated_user_history[updated_user_history["user_id"] == user_id], updated_library, on="spotify_id", how="inner")
 
     @staticmethod
     def persist_track(track_data):
@@ -189,7 +233,7 @@ class DataService:
         if not data_to_save["spotify_id"]:
             return
             
-        new_df = pd.DataFrame([data_to_save])
+        new_df = pd.DataFrame([data_to_save])[DataService.COLUMNS_ORDER]
         
         if library_df.empty:
             updated_library = new_df

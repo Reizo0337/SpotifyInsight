@@ -15,15 +15,16 @@ async def sync_data():
         recent_tracks = spotify.get_recently_played_with_features()
         
         all_new_tracks = top_tracks + recent_tracks
-        df = DataService.append_new_tracks(all_new_tracks)
+        df = DataService.append_new_tracks(all_new_tracks, user_name=spotify.user_name, user_id=spotify.user_id)
         
-        return {"status": "success", "tracks_synced": len(all_new_tracks), "total_tracks": len(df)}
+        return {"status": "success", "tracks_synced": len(all_new_tracks), "total_tracks": len(df), "user": spotify.user_name}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/analysis")
 async def get_analysis():
-    df = DataService.load_data()
+    spotify = SpotifyService()
+    df = DataService.load_data(user_id=spotify.user_id)
     if df.empty:
         return {"status": "no_data", "message": "No data available. Please sync first."}
     
@@ -156,7 +157,8 @@ async def analyze_track(song: str, artist: str = ""):
 
 @router.get("/user-profile")
 async def get_user_profile():
-    df = DataService.load_data()
+    spotify = SpotifyService()
+    df = DataService.load_data(user_id=spotify.user_id)
     if df.empty:
         return {"status": "no_data", "message": "No data available. Please sync first."}
     

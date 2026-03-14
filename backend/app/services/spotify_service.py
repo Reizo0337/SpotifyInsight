@@ -18,10 +18,12 @@ class SpotifyService:
                 )
             user = self.sp.current_user()
             self.user_name = user["display_name"] if user else "Unknown"
+            self.user_id = user["id"] if user else "Unknown"
         except Exception as e:
             print(f"Spotify Auth Error: {e}")
             self.sp = None
             self.user_name = "Unknown"
+            self.user_id = "Unknown"
 
     def is_connected(self):
         return self.sp is not None
@@ -91,14 +93,30 @@ class SpotifyService:
         except Exception:
             audio_features = [None] * len(tracks)
             
+        # Fetch artist genres
+        artist_ids = list(set([t["artists"][0]["id"] for t in tracks if t.get("artists")]))
+        artist_genres = {}
+        try:
+            for i in range(0, len(artist_ids), 50):
+                batch = artist_ids[i:i+50]
+                artists_data = self.sp.artists(batch)["artists"]
+                for artist in artists_data:
+                    if artist.get("genres"):
+                        artist_genres[artist["id"]] = artist["genres"][0]
+        except Exception:
+            pass
+
         data = []
         for i, track in enumerate(tracks):
             features = audio_features[i] if (i < len(audio_features) and audio_features[i]) else {}
+            main_artist = track["artists"][0] if track.get("artists") else {}
             data.append({
                 "track_name": track.get("name", "Unknown"),
-                "artist": track["artists"][0]["name"] if track.get("artists") else "Unknown",
+                "artist": main_artist.get("name", "Unknown"),
+                "artist_id": main_artist.get("id"),
                 "album": track.get("album", {}).get("name", "Unknown"),
                 "popularity": track.get("popularity", 0),
+                "genre": artist_genres.get(main_artist.get("id"), "Unknown"),
                 "danceability": features.get("danceability", 0),
                 "energy": features.get("energy", 0),
                 "tempo": features.get("tempo", 0),
@@ -119,12 +137,19 @@ class SpotifyService:
             tracks.sort(key=lambda x: x.get("popularity", 0), reverse=True)
             t = tracks[0]
             
-            # Fetch audio features for the winner
+            # Fetch audio features AND genre for the winner
             features = {}
+            genre = "Unknown"
             try:
+                # Get features
                 af = self.sp.audio_features([t["id"]])
                 if af and af[0]:
                     features = af[0]
+                
+                # Get genre from artist metadata
+                artist_data = self.sp.artist(t["artists"][0]["id"])
+                if artist_data.get("genres"):
+                    genre = artist_data["genres"][0]
             except Exception:
                 pass
 
@@ -133,6 +158,7 @@ class SpotifyService:
                 "artist": t["artists"][0]["name"],
                 "id": t["id"],
                 "artist_id": t["artists"][0]["id"],
+                "genre": genre,
                 "preview_url": t.get("preview_url"),
                 "target_features": {
                     "danceability": features.get("danceability", 0),
