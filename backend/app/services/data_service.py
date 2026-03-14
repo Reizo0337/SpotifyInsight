@@ -3,7 +3,8 @@ import pandas as pd
 import os
 
 BASE_DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "processed")
-LIBRARY_PATH = os.path.join(BASE_DATA_DIR, "saved_tracks.csv")
+LIBRARY_PATH = os.path.join(BASE_DATA_DIR, "saved_tracks.parquet")
+LIBRARY_CSV_PATH = os.path.join(BASE_DATA_DIR, "saved_tracks.csv") # For visibility
 USER_TRACKS_PATH = os.path.join(BASE_DATA_DIR, "user_tracks.csv")
 
 class DataService:
@@ -15,31 +16,44 @@ class DataService:
     
     _library_cache = None
     _library_mtime = 0
+    _library_ids_cache = None
+    _library_indexed_cache = None
 
     @staticmethod
     def load_library():
-        """Loads all unique tracks with their audio features (with memory caching)."""
+        """Loads all unique tracks with their audio features (with extreme Parquet speed)."""
+        import time
+        start_time = time.time()
+        
+        # Migration: if parquet doesn't exist but CSV does, convert it
+        if not os.path.exists(LIBRARY_PATH) and os.path.exists(LIBRARY_CSV_PATH):
+            print("[DATA] Migrating CSV library to Parquet format...")
+            df_csv = pd.read_csv(LIBRARY_CSV_PATH)
+            # Force types early
+            numeric_cols = ["danceability", "energy", "tempo", "valence", "acousticness", 
+                           "instrumentalness", "speechiness", "loudness", "popularity", "key", "mode"]
+            for col in numeric_cols:
+                if col in df_csv.columns:
+                    df_csv[col] = pd.to_numeric(df_csv[col], errors='coerce').fillna(0.0).astype('float32')
+            df_csv.to_parquet(LIBRARY_PATH, index=False)
+
         if not os.path.exists(LIBRARY_PATH):
             return pd.DataFrame(columns=DataService.COLUMNS_ORDER)
         
         try:
-            # Check if cache is fresh
             current_mtime = os.path.getmtime(LIBRARY_PATH)
             if DataService._library_cache is not None and current_mtime <= DataService._library_mtime:
+                # print("[DATA] Library cache hit.")
                 return DataService._library_cache
 
-            print(f"Loading library from disk ({round(os.path.getsize(LIBRARY_PATH)/1024/1024, 2)} MB)...")
-            df = pd.read_csv(LIBRARY_PATH)
-            
-            # Map legacy names if they appear
-            df = df.rename(columns={
-                "Track/Item Name": "track_name",
-                "Artist/Detail": "artist"
-            })
+            print(f"[DATA] Loading library from Parquet ({round(os.path.getsize(LIBRARY_PATH)/1024/1024, 2)} MB)...")
+            df = pd.read_parquet(LIBRARY_PATH)
             
             # Ensure all columns exist and are in the correct order
-            for col in DataService.COLUMNS_ORDER:
-                if col not in df.columns:
+            missing_cols = [col for col in DataService.COLUMNS_ORDER if col not in df.columns]
+            if missing_cols:
+                print(f"[DATA] Fixing {len(missing_cols)} missing columns in library...")
+                for col in missing_cols:
                     if col in ["danceability", "energy", "tempo", "valence", "acousticness", 
                               "instrumentalness", "speechiness", "loudness", "popularity", "key", "mode"]:
                         df[col] = 0.0
@@ -49,63 +63,83 @@ class DataService:
             # Reorder
             df = df[DataService.COLUMNS_ORDER]
 
-            # Force numeric types for features to avoid "Unknown" strings in numeric columns
+            # Force numeric types to float32 (better for Parquet/Numpy)
             numeric_cols = [
                 "danceability", "energy", "tempo", "valence", 
                 "acousticness", "instrumentalness", "speechiness", "loudness",
                 "popularity", "key", "mode"
             ]
             for col in numeric_cols:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0).astype('float32')
             
             # Update cache
             DataService._library_cache = df
             DataService._library_mtime = current_mtime
+            # Pre-calculate caches for O(1) access (takes ~1s once)
+            DataService._library_ids_cache = set(df["spotify_id"].astype(str))
+            DataService._library_indexed_cache = df[df["energy"] != 0].set_index("spotify_id")
             
+            print(f"[DATA] Library loaded and indexed in {time.time()-start_time:.3f}s")
             return df
         except Exception as e:
-            print(f"Error loading library: {e}")
+            print(f"[DATA] Error loading library: {e}")
+            import traceback
+            traceback.print_exc()
             return pd.DataFrame()
 
     @staticmethod
     def load_data(user_id=None):
         """Loads a specific user's tracks joined with library metadata."""
+        import time
+        start_time = time.time()
+        
         if not os.path.exists(USER_TRACKS_PATH):
             return pd.DataFrame()
         
         try:
             user_df = pd.read_csv(USER_TRACKS_PATH)
             if user_id:
-                # Prioritize user_id if provided
                 user_df = user_df[user_df["user_id"] == user_id]
             
             library_df = DataService.load_library()
             if library_df.empty:
                 return pd.DataFrame()
             
-            # Join user track list with full metadata
-            # We drop duplicated track_name from user_df because it exists in library
             if "track_name" in user_df.columns and "track_name" in library_df.columns:
                 user_df = user_df.drop(columns=["track_name"])
 
-            return pd.merge(user_df, library_df, on="spotify_id", how="inner")
+            res = pd.merge(user_df, library_df, on="spotify_id", how="inner")
+            print(f"[DATA] User data loaded/joined in {time.time()-start_time:.3f}s")
+            return res
         except Exception as e:
-            print(f"Error loading user data: {e}")
+            print(f"[DATA] Error loading user data: {e}")
             return pd.DataFrame()
 
     @staticmethod
     def save_library(df):
         """Saves unique track metadata to library and updates cache."""
+        import time
+        start_time = time.time()
         if df.empty:
             return
             
-        # Ensure correct order before saving
-        df = df[DataService.COLUMNS_ORDER]
-        df.drop_duplicates(subset=["spotify_id"]).to_csv(LIBRARY_PATH, index=False)
+        # Ensure correct types for Parquet
+        numeric_cols = ["danceability", "energy", "tempo", "valence", "acousticness", 
+                       "instrumentalness", "speechiness", "loudness", "popularity", "key", "mode"]
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0).astype('float32')
+
+        df = df[DataService.COLUMNS_ORDER].drop_duplicates(subset=["spotify_id"])
         
-        # Update cache to avoid reload
+        df.to_parquet(LIBRARY_PATH, index=False)
+        print(f"[DATA] Library saved in {time.time()-start_time:.3f}s")
+        
+        # Update cache
         DataService._library_cache = df
         DataService._library_mtime = os.path.getmtime(LIBRARY_PATH)
+        DataService._library_ids_cache = set(df["spotify_id"].astype(str))
+        DataService._library_indexed_cache = df[df["energy"] != 0].set_index("spotify_id")
 
     @staticmethod
     def save_user_tracks(df):
@@ -115,6 +149,9 @@ class DataService:
     @staticmethod
     def append_new_tracks(new_tracks, user_name="DefaultUser", user_id="Unknown"):
         """Adds new tracks to both library and user history with batch optimization."""
+        import time
+        t_start = time.time()
+        
         library_df = DataService.load_library()
         new_df = pd.DataFrame(new_tracks)
         
@@ -122,16 +159,17 @@ class DataService:
             return library_df
             
         # 1. Update Library efficiently
-        # Use a set for O(1) lookups
-        existing_ids = set()
-        if not library_df.empty:
-            existing_ids = set(library_df["spotify_id"].values)
-        
-        # Identify TRULY new tracks that aren't in our 5M+ library
-        truly_new_tracks = new_df[~new_df["spotify_id"].isin(existing_ids)].copy()
+        t1 = time.time()
+        # Use cached ID set for near-instant membership check
+        if DataService._library_ids_cache is None:
+            # Fallback if cache was somehow missed
+            DataService._library_ids_cache = set(library_df["spotify_id"].astype(str))
+            
+        truly_new_tracks = new_df[~new_df["spotify_id"].astype(str).isin(DataService._library_ids_cache)].copy()
+        print(f"[DATA] Identified {len(truly_new_tracks)} new tracks in {time.time()-t1:.3f}s")
         
         if not truly_new_tracks.empty:
-            print(f"Found {len(truly_new_tracks)} new tracks to enrich...")
+            print(f"[DATA] Enriched {len(truly_new_tracks)} new tracks...")
             from .spotify_service import SpotifyService
             sp = SpotifyService()
             
@@ -164,7 +202,6 @@ class DataService:
                             enriched_list.append(original_row)
                 except Exception as e:
                     print(f"Batch enrichment error: {e}")
-                    # Keep original rows without features if it fails
                     for j in range(len(batch_ids)):
                         enriched_list.append(truly_new_tracks.iloc[i+j].to_dict())
             
@@ -181,7 +218,8 @@ class DataService:
             
             DataService.save_library(library_df)
         
-        # 2. Update User History (FILTERED)
+        # 2. Update User History
+        t2 = time.time()
         if os.path.exists(USER_TRACKS_PATH):
             try:
                 user_history = pd.read_csv(USER_TRACKS_PATH)
@@ -190,13 +228,14 @@ class DataService:
         else:
             user_history = pd.DataFrame(columns=["user_id", "user_name", "spotify_id", "track_name"])
         
-        existing_user_tracks = set()
-        if not user_history.empty:
-            existing_user_tracks = set(zip(user_history["user_id"].astype(str), user_history["spotify_id"].astype(str)))
+        # Optimized history filtering
+        uid_str = str(user_id)
+        current_user_ids = set(user_history[user_history["user_id"].astype(str) == uid_str]["spotify_id"].astype(str))
 
         new_mappings = []
         for _, row in new_df.iterrows():
-            if (str(user_id), str(row["spotify_id"])) not in existing_user_tracks:
+            sid_str = str(row["spotify_id"])
+            if sid_str not in current_user_ids:
                 new_mappings.append({
                     "user_id": user_id,
                     "user_name": user_name,
@@ -208,12 +247,23 @@ class DataService:
             new_hist_df = pd.DataFrame(new_mappings)
             user_history = pd.concat([user_history, new_hist_df]).reset_index(drop=True)
             DataService.save_user_tracks(user_history)
-            print(f"Added {len(new_mappings)} new tracks to history for {user_name}")
+            print(f"[DATA] Added {len(new_mappings)} history records in {time.time()-t2:.3f}s")
+        else:
+            print(f"[DATA] No new history records (checked in {time.time()-t2:.3f}s)")
 
-        # Return joined view for the specific user (Filtered to avoid huge join)
-        # We only return the last 100 for immediate UI feedback to keep it fast
-        current_user_history = user_history[user_history["user_id"] == user_id].tail(100)
-        return pd.merge(current_user_history, library_df, on="spotify_id", how="inner")
+        # 3. Join Result - CRITICAL PERFORMANCE BOOST
+        t3 = time.time()
+        # Filter library just for the tracks we have in history (max 100)
+        recent_hist = user_history[user_history["user_id"] == user_id].tail(100)
+        recent_ids = recent_hist["spotify_id"].unique()
+        
+        # Filter library first to make the merge tiny
+        filtered_library = library_df[library_df["spotify_id"].isin(recent_ids)]
+        res = pd.merge(recent_hist, filtered_library, on="spotify_id", how="inner")
+        print(f"[DATA] Result join took {time.time()-t3:.3f}s")
+        
+        print(f"[DATA] append_new_tracks total: {time.time()-t_start:.3f}s")
+        return res
 
     @staticmethod
     def persist_track(track_data):

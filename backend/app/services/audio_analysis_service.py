@@ -61,6 +61,8 @@ class AudioAnalysisService:
         """
         Downloads a 30s preview and extracts audio features using librosa.
         """
+        import time
+        t_start = time.time()
         if not preview_url:
             return None
 
@@ -88,13 +90,17 @@ class AudioAnalysisService:
                 return None
 
             # Load audio using PyAV to avoid NoBackendError on Windows
-            print(f"Decoding {temp_path} using PyAV...")
+            t_dec = time.time()
+            print(f"[ANALYSIS] Decoding {temp_path} using PyAV...")
             y, sr = AudioAnalysisService.decode_with_av(temp_path)
+            print(f"[ANALYSIS] Decoding took {time.time()-t_dec:.3f}s")
             
             if y is None or len(y) == 0:
-                print("Decoding failed: result is empty")
+                print("[ANALYSIS] Decoding failed: result is empty")
                 return None
 
+            t_feat = time.time()
+            print("[ANALYSIS] Extracting features (librosa)...")
             # 1. Tempo
             tempo_result, _ = librosa.beat.beat_track(y=y, sr=sr)
             if hasattr(tempo_result, "__len__"):
@@ -170,6 +176,9 @@ class AudioAnalysisService:
             correlation = np.corrcoef(mean_chroma, shifted_profile)[0, 1]
             mode = 1 if correlation > 0 else 0
 
+            t_total = time.time() - t_start
+            print(f"[ANALYSIS] Analysis completed in {t_total:.3f}s")
+            
             return {
                 "tempo": round(tempo, 1),
                 "energy": round(energy, 3),

@@ -7,18 +7,33 @@ from ..services.recommendation_service import RecommendationService
 
 router = APIRouter()
 
+import time
+
 @router.get("/sync")
 async def sync_data():
+    t0 = time.time()
     try:
+        print("[SYNC] Starting sync process...")
         spotify = SpotifyService()
+        
+        t1 = time.time()
         top_tracks = spotify.get_top_tracks_with_features()
+        print(f"[SYNC] got top tracks in {time.time()-t1:.3f}s")
+        
+        t2 = time.time()
         recent_tracks = spotify.get_recently_played_with_features()
+        print(f"[SYNC] got recent tracks in {time.time()-t2:.3f}s")
         
         all_new_tracks = top_tracks + recent_tracks
-        df = DataService.append_new_tracks(all_new_tracks, user_name=spotify.user_name, user_id=spotify.user_id)
         
+        t3 = time.time()
+        df = DataService.append_new_tracks(all_new_tracks, user_name=spotify.user_name, user_id=spotify.user_id)
+        print(f"[SYNC] appended tracks in {time.time()-t3:.3f}s")
+        
+        print(f"[SYNC] Total time: {time.time()-t0:.3f}s")
         return {"status": "success", "tracks_synced": len(all_new_tracks), "total_tracks": len(df), "user": spotify.user_name}
     except Exception as e:
+        print(f"[SYNC] Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/analysis")
@@ -33,15 +48,15 @@ async def get_analysis():
 
 @router.get("/recommendations")
 async def get_recommendations(limit: int = 10, mode: str = "vibe", song: str = None):
-    """
-    Get track recommendations.
-    Modes:
-    - 'vibe': Local library matching using IA features (Content-Based)
-    - 'discovery': Spotify-led discovery weighted by your taste vector.
-    """
+    t0 = time.time()
+    print(f"[REC] Starting recommendations (mode={mode}, limit={limit}, song={song})...")
+    
+    t1 = time.time()
     library_df = DataService.load_library()
-    user_df = DataService.load_data() # Returns joined view
+    print(f"[REC] Loaded library in {time.time()-t1:.3f}s (len={len(library_df)})")
+    
     spotify = SpotifyService()
+    user_df = DataService.load_data(user_id=spotify.user_id) # Returns joined view
     
     if not spotify.is_connected():
         raise HTTPException(status_code=503, detail="Spotify disconnected")
@@ -49,7 +64,9 @@ async def get_recommendations(limit: int = 10, mode: str = "vibe", song: str = N
     # If song is specified, we find recommendations based AT LEAST on that song
     target_track = None
     if song:
+        t2 = time.time()
         target_track = spotify.search_track(song)
+        print(f"[REC] Searched track in {time.time()-t2:.3f}s")
         if not target_track:
             raise HTTPException(status_code=404, detail="Song not found")
             
@@ -63,9 +80,11 @@ async def get_recommendations(limit: int = 10, mode: str = "vibe", song: str = N
         else:
             # Fallback to direct analysis if not in library or search features failed
             from ..services.audio_analysis_service import AudioAnalysisService
+            t3 = time.time()
             preview = target_track.get("preview_url") or AudioAnalysisService.get_preview_from_itunes(target_track["name"], target_track["artist"])
             if preview:
                 target_track["target_features"] = AudioAnalysisService.analyze_preview(preview)
+            print(f"[REC] Audio analysis took {time.time()-t3:.3f}s")
 
         # Persistence: If we have features (from Spotify OR analysis), save to library
         if target_track.get("target_features"):
@@ -74,17 +93,23 @@ async def get_recommendations(limit: int = 10, mode: str = "vibe", song: str = N
 
     # 1. DISCOVERY MODE (Spotify-led)
     if mode == "discovery":
+        t4 = time.time()
         user_taste_ids = user_df["spotify_id"].tail(10).tolist() if not user_df.empty else []
         
         if target_track:
-            return spotify.get_recommendations_weighted(target_track, user_taste_ids, limit=limit)
+            res = spotify.get_recommendations_weighted(target_track, user_taste_ids, limit=limit)
+            print(f"[REC] Spotify weighted recs took {time.time()-t4:.3f}s")
+            return res
         else:
             # Random seed from taste
             seed_ids = user_df["spotify_id"].sample(min(5, len(user_df))).tolist() if not user_df.empty else []
-            return spotify.get_recommendations_from_spotify(seed_ids, limit=limit)
+            res = spotify.get_recommendations_from_spotify(seed_ids, limit=limit)
+            print(f"[REC] Spotify standard recs took {time.time()-t4:.3f}s")
+            return res
 
     # 2. VIBE MODE (Local Library matching)
     if mode == "vibe":
+        t5 = time.time()
         if library_df.empty:
             return {"status": "no_data", "message": "Library is empty."}
             
@@ -92,10 +117,14 @@ async def get_recommendations(limit: int = 10, mode: str = "vibe", song: str = N
         if target_track and "target_features" in target_track:
             # We wrap target features in a mock DF for RecommendationService
             target_df = pd.DataFrame([target_track["target_features"]])
-            return RecommendationService.get_recommendations(library_df, user_profile_tracks=target_df, n_recommendations=limit)
+            res = RecommendationService.get_recommendations(library_df, user_profile_tracks=target_df, n_recommendations=limit)
+            print(f"[REC] Vibe recs (with target) took {time.time()-t5:.3f}s")
+            return res
         
         # Default: recommend based on recent history
-        return RecommendationService.get_recommendations(library_df, user_profile_tracks=None, n_recommendations=limit)
+        res = RecommendationService.get_recommendations(library_df, user_profile_tracks=None, n_recommendations=limit)
+        print(f"[REC] Vibe recs (no target) took {time.time()-t5:.3f}s")
+        return res
 
     return {"error": "Invalid mode. Use 'vibe' or 'discovery'"}
 

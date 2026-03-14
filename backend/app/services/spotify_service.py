@@ -19,8 +19,9 @@ class SpotifyService:
             user = self.sp.current_user()
             self.user_name = user["display_name"] if user else "Unknown"
             self.user_id = user["id"] if user else "Unknown"
+            print(f"[SPOTIFY] Connected as {self.user_name} ({self.user_id})")
         except Exception as e:
-            print(f"Spotify Auth Error: {e}")
+            print(f"[SPOTIFY] Auth Error: {e}")
             self.sp = None
             self.user_name = "Unknown"
             self.user_id = "Unknown"
@@ -29,37 +30,62 @@ class SpotifyService:
         return self.sp is not None
 
     def get_top_tracks_with_features(self, limit=50):
+        import time
+        t_start = time.time()
         if not self.sp: return []
+        
         results = self.sp.current_user_top_tracks(time_range="medium_term", limit=limit)
         tracks = results["items"]
-        
-        if not tracks:
-            return []
+        if not tracks: return []
             
         track_ids = [t["id"] for t in tracks]
-        try:
-            audio_features = self.sp.audio_features(track_ids)
-        except Exception as e:
-            print(f"Warning: Could not fetch audio features (403/Forbidden). Error: {e}")
-            audio_features = [None] * len(tracks)
-            
-        # Fetch artist genres to improve analysis
+        
+        # Optimization: Use global cached index
+        from .data_service import DataService
+        DataService.load_library() # Ensures cache is populated
+        
+        lib_lookup = DataService._library_indexed_cache
+        
+        final_features = {}
+        missing_ids = []
+        
+        for tid in track_ids:
+            if lib_lookup is not None and tid in lib_lookup.index:
+                # loc returns a Series for a single index
+                final_features[tid] = lib_lookup.loc[tid].to_dict()
+            else:
+                missing_ids.append(tid)
+        
+        if missing_ids:
+            t_af = time.time()
+            print(f"[SPOTIFY] Fetching {len(missing_ids)} missing features from API...")
+            try:
+                af_list = self.sp.audio_features(missing_ids)
+                for idx, af in enumerate(af_list):
+                    if af:
+                        final_features[missing_ids[idx]] = af
+            except Exception as e:
+                print(f"[SPOTIFY] API error: {e}")
+            print(f"[SPOTIFY] audio_features call took {time.time()-t_af:.3f}s")
+
+        # Artist genres (cached or batch)
+        t_genre = time.time()
         artist_ids = list(set([t["artists"][0]["id"] for t in tracks if t.get("artists")]))
         artist_genres = {}
         try:
-            # Spotify allows 50 artists per request
             for i in range(0, len(artist_ids), 50):
                 batch = artist_ids[i:i+50]
                 artists_data = self.sp.artists(batch)["artists"]
                 for artist in artists_data:
                     if artist.get("genres"):
-                        artist_genres[artist["id"]] = artist["genres"][0] # Take first genre
-        except Exception:
-            pass
+                        artist_genres[artist["id"]] = artist["genres"][0]
+        except Exception: pass
+        print(f"[SPOTIFY] Genre fetching (artists) took {time.time()-t_genre:.3f}s")
         
         data = []
-        for i, track in enumerate(tracks):
-            features = audio_features[i] if (i < len(audio_features) and audio_features[i]) else {}
+        for track in tracks:
+            tid = track["id"]
+            feat = final_features.get(tid, {})
             main_artist = track["artists"][0] if track.get("artists") else {}
             data.append({
                 "track_name": track.get("name", "Unknown"),
@@ -68,30 +94,53 @@ class SpotifyService:
                 "album": track.get("album", {}).get("name", "Unknown"),
                 "popularity": track.get("popularity", 0),
                 "genre": artist_genres.get(main_artist.get("id"), "Unknown"),
-                "danceability": features.get("danceability", 0),
-                "energy": features.get("energy", 0),
-                "tempo": features.get("tempo", 0),
-                "valence": features.get("valence", 0),
-                "acousticness": features.get("acousticness", 0),
-                "instrumentalness": features.get("instrumentalness", 0),
-                "speechiness": features.get("speechiness", 0),
-                "spotify_id": track.get("id")
+                "danceability": feat.get("danceability", 0),
+                "energy": feat.get("energy", 0),
+                "tempo": feat.get("tempo", 0),
+                "valence": feat.get("valence", 0),
+                "acousticness": feat.get("acousticness", 0),
+                "instrumentalness": feat.get("instrumentalness", 0),
+                "speechiness": feat.get("speechiness", 0),
+                "loudness": feat.get("loudness", 0),
+                "key": feat.get("key", 0),
+                "mode": feat.get("mode", 0),
+                "spotify_id": tid
             })
+        print(f"[SPOTIFY] get_top_tracks processed in {time.time()-t_start:.3f}s")
         return data
 
     def get_recently_played_with_features(self, limit=50):
+        import time
+        t_start = time.time()
         if not self.sp: return []
         results = self.sp.current_user_recently_played(limit=limit)
         tracks = [item["track"] for item in results["items"] if item.get("track")]
-        
-        if not tracks:
-            return []
+        if not tracks: return []
             
         track_ids = [t["id"] for t in tracks if t.get("id")]
-        try:
-            audio_features = self.sp.audio_features(track_ids)
-        except Exception:
-            audio_features = [None] * len(tracks)
+        
+        # Optimization: Use global cached index
+        from .data_service import DataService
+        DataService.load_library()
+        
+        lib_lookup = DataService._library_indexed_cache
+        
+        final_features = {}
+        missing_ids = []
+        for tid in track_ids:
+            if lib_lookup is not None and tid in lib_lookup.index:
+                final_features[tid] = lib_lookup.loc[tid].to_dict()
+            else:
+                missing_ids.append(tid)
+        
+        if missing_ids:
+            print(f"[SPOTIFY] Fetching {len(missing_ids)} missing features for recent tracks...")
+            try:
+                af_list = self.sp.audio_features(missing_ids)
+                for idx, af in enumerate(af_list):
+                    if af:
+                        final_features[missing_ids[idx]] = af
+            except Exception: pass
             
         # Fetch artist genres
         artist_ids = list(set([t["artists"][0]["id"] for t in tracks if t.get("artists")]))
@@ -108,7 +157,8 @@ class SpotifyService:
 
         data = []
         for i, track in enumerate(tracks):
-            features = audio_features[i] if (i < len(audio_features) and audio_features[i]) else {}
+            tid = track["id"]
+            feat = final_features.get(tid, {})
             main_artist = track["artists"][0] if track.get("artists") else {}
             data.append({
                 "track_name": track.get("name", "Unknown"),
@@ -117,15 +167,19 @@ class SpotifyService:
                 "album": track.get("album", {}).get("name", "Unknown"),
                 "popularity": track.get("popularity", 0),
                 "genre": artist_genres.get(main_artist.get("id"), "Unknown"),
-                "danceability": features.get("danceability", 0),
-                "energy": features.get("energy", 0),
-                "tempo": features.get("tempo", 0),
-                "valence": features.get("valence", 0),
-                "acousticness": features.get("acousticness", 0),
-                "instrumentalness": features.get("instrumentalness", 0),
-                "speechiness": features.get("speechiness", 0),
-                "spotify_id": track.get("id")
+                "danceability": feat.get("danceability", 0),
+                "energy": feat.get("energy", 0),
+                "tempo": feat.get("tempo", 0),
+                "valence": feat.get("valence", 0),
+                "acousticness": feat.get("acousticness", 0),
+                "instrumentalness": feat.get("instrumentalness", 0),
+                "speechiness": feat.get("speechiness", 0),
+                "loudness": feat.get("loudness", 0),
+                "key": feat.get("key", 0),
+                "mode": feat.get("mode", 0),
+                "spotify_id": tid
             })
+        print(f"[SPOTIFY] get_recently_played processed in {time.time()-t_start:.3f}s")
         return data
 
     def search_track(self, query):
