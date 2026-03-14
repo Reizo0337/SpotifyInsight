@@ -105,11 +105,12 @@ class DataService:
             if library_df.empty:
                 return pd.DataFrame()
             
-            if "track_name" in user_df.columns and "track_name" in library_df.columns:
-                user_df = user_df.drop(columns=["track_name"])
-
-            res = pd.merge(user_df, library_df, on="spotify_id", how="inner")
-            print(f"[DATA] User data loaded/joined in {time.time()-start_time:.3f}s")
+            # Optimization: filter library by user's IDs before merge
+            relevant_ids = user_df["spotify_id"].unique()
+            filtered_lib = library_df[library_df["spotify_id"].isin(relevant_ids)]
+            
+            res = pd.merge(user_df, filtered_lib, on="spotify_id", how="inner")
+            print(f"[DATA] User data loaded/joined in {time.time()-start_time:.3f}s (history rows: {len(user_df)})")
             return res
         except Exception as e:
             print(f"[DATA] Error loading user data: {e}")
@@ -162,29 +163,36 @@ class DataService:
         t1 = time.time()
         # Use cached ID set for near-instant membership check
         if DataService._library_ids_cache is None:
-            # Fallback if cache was somehow missed
-            DataService._library_ids_cache = set(library_df["spotify_id"].astype(str))
+            # Load library populates the cache
+            DataService.load_library()
             
-        truly_new_tracks = new_df[~new_df["spotify_id"].astype(str).isin(DataService._library_ids_cache)].copy()
-        print(f"[DATA] Identified {len(truly_new_tracks)} new tracks in {time.time()-t1:.3f}s")
+        truly_new_ids = [sid for sid in new_df["spotify_id"].astype(str) if sid not in DataService._library_ids_cache]
+        truly_new_tracks = new_df[new_df["spotify_id"].astype(str).isin(truly_new_ids)].copy()
+        
+        print(f"[DATA] Identified {len(truly_new_tracks)} new tracks in {time.time()-t_start:.3f}s")
         
         if not truly_new_tracks.empty:
-            print(f"[DATA] Enriched {len(truly_new_tracks)} new tracks...")
             from .spotify_service import SpotifyService
-            sp = SpotifyService()
             
-            # Batch enrichment via Spotify API (100 tracks per request)
-            enriched_list = []
-            new_ids = truly_new_tracks["spotify_id"].tolist()
-            
-            for i in range(0, len(new_ids), 100):
-                batch_ids = new_ids[i:i+100]
-                try:
-                    af_list = sp.sp.audio_features(batch_ids)
+            if "audio_features" in SpotifyService._forbidden_endpoints:
+                print("[DATA] Skipping enrichment (Spotify audio_features forbidden)")
+                library_df = pd.concat([library_df, truly_new_tracks]).drop_duplicates(
+                    subset=["spotify_id"], keep="last"
+                ).reset_index(drop=True)
+                DataService.save_library(library_df)
+            else:
+                print(f"[DATA] Enriched {len(truly_new_tracks)} new tracks...")
+                sp = SpotifyService()
+                enriched_list = []
+                new_ids = truly_new_tracks["spotify_id"].tolist()
+                
+                for i in range(0, len(new_ids), 100):
+                    batch_ids = new_ids[i:i+100]
+                    # Use get_audio_features which has the circuit breaker
+                    af_list = sp.get_audio_features(batch_ids)
                     for idx, af in enumerate(af_list):
                         original_row = truly_new_tracks.iloc[i + idx].to_dict()
                         if af:
-                            # Merge Spotify features
                             features = {
                                 "danceability": af.get("danceability", 0),
                                 "energy": af.get("energy", 0),
@@ -200,23 +208,26 @@ class DataService:
                             enriched_list.append({**original_row, **features})
                         else:
                             enriched_list.append(original_row)
-                except Exception as e:
-                    print(f"Batch enrichment error: {e}")
-                    for j in range(len(batch_ids)):
-                        enriched_list.append(truly_new_tracks.iloc[i+j].to_dict())
-            
-            # Combine with library
-            enriched_df = pd.DataFrame(enriched_list)
-            # Ensure order
-            for col in DataService.COLUMNS_ORDER:
-                if col not in enriched_df.columns:
-                    enriched_df[col] = 0 if col in ["popularity", "key", "mode"] else "Unknown"
-            
-            library_df = pd.concat([library_df, enriched_df[DataService.COLUMNS_ORDER]]).drop_duplicates(
-                subset=["spotify_id"], keep="last"
-            ).reset_index(drop=True)
-            
-            DataService.save_library(library_df)
+                    
+                    # Final safety: if the endpoint just got forbidden, stop the loop
+                    if "audio_features" in SpotifyService._forbidden_endpoints:
+                        print("[DATA] Endpoint forbidden during batch. Skipping remaining enrichment.")
+                        for j in range(i + len(batch_ids), len(new_ids)):
+                            enriched_list.append(truly_new_tracks.iloc[j].to_dict())
+                        break
+                
+                # Combine with library
+                enriched_df = pd.DataFrame(enriched_list)
+                # Ensure order
+                for col in DataService.COLUMNS_ORDER:
+                    if col not in enriched_df.columns:
+                        enriched_df[col] = 0 if col in ["popularity", "key", "mode"] else "Unknown"
+                
+                library_df = pd.concat([library_df, enriched_df[DataService.COLUMNS_ORDER]]).drop_duplicates(
+                    subset=["spotify_id"], keep="last"
+                ).reset_index(drop=True)
+                
+                DataService.save_library(library_df)
         
         # 2. Update User History
         t2 = time.time()

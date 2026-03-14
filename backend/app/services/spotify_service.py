@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class SpotifyService:
+    _forbidden_endpoints = set() # To skip 403-ing endpoints (Spotify API restrictions)
     def __init__(self):
         try:
             self.sp = spotipy.Spotify(
@@ -13,7 +14,7 @@ class SpotifyService:
                     client_id=os.getenv("SPOTIPY_CLIENT_ID"),
                     client_secret=os.getenv("SPOTIPY_CLIENT_SECRET"),
                     redirect_uri="http://127.0.0.1:8080/callback",
-                    scope="user-top-read user-library-read user-read-recently-played playlist-read-private"
+                    scope="user-top-read user-library-read user-read-recently-played playlist-read-private playlist-read-collaborative user-follow-read user-read-playback-state user-read-currently-playing user-modify-playback-state"
                     )
                 )
             user = self.sp.current_user()
@@ -28,6 +29,39 @@ class SpotifyService:
 
     def is_connected(self):
         return self.sp is not None
+
+    def get_audio_features(self, track_ids):
+        """Fetch audio features with circuit breaker protection."""
+        if not self.sp or "audio_features" in SpotifyService._forbidden_endpoints:
+            return [None] * len(track_ids)
+        
+        try:
+            return self.sp.audio_features(track_ids)
+        except Exception as e:
+            if "403" in str(e) or "Forbidden" in str(e):
+                print(f"[SPOTIFY] !!! 403 FORBIDDEN DETECTED on audio_features !!! Skipping for this session.")
+                SpotifyService._forbidden_endpoints.add("audio_features")
+            return [None] * len(track_ids)
+
+    def get_artists(self, artist_ids):
+        """Fetch artists data with circuit breaker protection."""
+        if not self.sp or "artists" in SpotifyService._forbidden_endpoints:
+            return []
+            
+        try:
+            # Spotify allows 50 artists per request
+            all_artists = []
+            for i in range(0, len(artist_ids), 50):
+                batch = artist_ids[i:i+50]
+                results = self.sp.artists(batch)
+                if results and "artists" in results:
+                    all_artists.extend(results["artists"])
+            return all_artists
+        except Exception as e:
+            if "403" in str(e) or "Forbidden" in str(e):
+                print(f"[SPOTIFY] !!! 403 FORBIDDEN DETECTED on artists !!! Skipping for this session.")
+                SpotifyService._forbidden_endpoints.add("artists")
+            return []
 
     def get_top_tracks_with_features(self, limit=50):
         import time
@@ -51,36 +85,29 @@ class SpotifyService:
         
         for tid in track_ids:
             if lib_lookup is not None and tid in lib_lookup.index:
-                # loc returns a Series for a single index
                 final_features[tid] = lib_lookup.loc[tid].to_dict()
             else:
                 missing_ids.append(tid)
         
         if missing_ids:
             t_af = time.time()
-            print(f"[SPOTIFY] Fetching {len(missing_ids)} missing features from API...")
-            try:
-                af_list = self.sp.audio_features(missing_ids)
-                for idx, af in enumerate(af_list):
-                    if af:
-                        final_features[missing_ids[idx]] = af
-            except Exception as e:
-                print(f"[SPOTIFY] API error: {e}")
-            print(f"[SPOTIFY] audio_features call took {time.time()-t_af:.3f}s")
+            af_list = self.get_audio_features(missing_ids)
+            for idx, af in enumerate(af_list):
+                if af:
+                    final_features[missing_ids[idx]] = af
+            print(f"[SPOTIFY] audio_features processed in {time.time()-t_af:.3f}s")
 
-        # Artist genres (cached or batch)
+        # Artist genres
         t_genre = time.time()
         artist_ids = list(set([t["artists"][0]["id"] for t in tracks if t.get("artists")]))
         artist_genres = {}
-        try:
-            for i in range(0, len(artist_ids), 50):
-                batch = artist_ids[i:i+50]
-                artists_data = self.sp.artists(batch)["artists"]
-                for artist in artists_data:
-                    if artist.get("genres"):
-                        artist_genres[artist["id"]] = artist["genres"][0]
-        except Exception: pass
-        print(f"[SPOTIFY] Genre fetching (artists) took {time.time()-t_genre:.3f}s")
+        
+        artists_data = self.get_artists(artist_ids)
+        for artist in artists_data:
+            if artist and artist.get("genres"):
+                artist_genres[artist["id"]] = artist["genres"][0]
+        
+        print(f"[SPOTIFY] Genre fetching processed in {time.time()-t_genre:.3f}s")
         
         data = []
         for track in tracks:
@@ -134,26 +161,18 @@ class SpotifyService:
                 missing_ids.append(tid)
         
         if missing_ids:
-            print(f"[SPOTIFY] Fetching {len(missing_ids)} missing features for recent tracks...")
-            try:
-                af_list = self.sp.audio_features(missing_ids)
-                for idx, af in enumerate(af_list):
-                    if af:
-                        final_features[missing_ids[idx]] = af
-            except Exception: pass
+            af_list = self.get_audio_features(missing_ids)
+            for idx, af in enumerate(af_list):
+                if af:
+                    final_features[missing_ids[idx]] = af
             
         # Fetch artist genres
-        artist_ids = list(set([t["artists"][0]["id"] for t in tracks if t.get("artists")]))
         artist_genres = {}
-        try:
-            for i in range(0, len(artist_ids), 50):
-                batch = artist_ids[i:i+50]
-                artists_data = self.sp.artists(batch)["artists"]
-                for artist in artists_data:
-                    if artist.get("genres"):
-                        artist_genres[artist["id"]] = artist["genres"][0]
-        except Exception:
-            pass
+        artist_ids = list(set([t["artists"][0]["id"] for t in tracks if t.get("artists")]))
+        artists_data = self.get_artists(artist_ids)
+        for artist in artists_data:
+            if artist and artist.get("genres"):
+                artist_genres[artist["id"]] = artist["genres"][0]
 
         data = []
         for i, track in enumerate(tracks):
