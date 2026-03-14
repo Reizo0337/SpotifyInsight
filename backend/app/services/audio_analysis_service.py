@@ -49,9 +49,11 @@ class AudioAnalysisService:
                 samples.append(np.frombuffer(rf.planes[0], dtype=np.int16))
         
         if not samples:
+            container.close()
             return None, None
             
         y = np.concatenate(samples).astype(np.float32) / 32768.0
+        container.close()
         return y, 22050
 
     @staticmethod
@@ -111,7 +113,9 @@ class AudioAnalysisService:
             onset_env = librosa.onset.onset_strength(y=y, sr=sr)
             pulse = librosa.beat.plp(onset_envelope=onset_env, sr=sr)
             danceability = float(np.mean(pulse))
-            danceability = min(1.0, danceability * 1.5)
+            # Makina and fast EDM have high rhythmic regularity. 
+            # We scale based on tempo too: faster = usually more "energy" which contributes to dance feel
+            danceability = min(1.0, danceability * 2.0)
 
             # 4. Valence (Happiness/Emotionality)
             # Heuristic: Brightness (Spectral Centroid) + Tempo
@@ -121,16 +125,26 @@ class AudioAnalysisService:
             valence = min(1.0, max(0.0, valence))
 
             # 5. Acousticness
-            # Based on harmonic vs percussive ratio
+            # Heuristic: High acousticness usually means low energy + high harmonic ratio
+            # But electronic music is also harmonic. We add a penalty for high tempo/energy.
             y_harmonic, y_percussive = librosa.effects.hpss(y)
-            acousticness = float(np.sum(np.abs(y_harmonic)) / (np.sum(np.abs(y)) + 1e-6))
-            acousticness = min(1.0, acousticness * 1.2)
+            harm_ratio = float(np.sum(np.abs(y_harmonic)) / (np.sum(np.abs(y)) + 1e-6))
+            acousticness = harm_ratio * (1.0 - energy * 0.5)
+            # If it's fast, it's less likely to be "acoustic" in the traditional sense
+            if tempo > 130:
+                acousticness *= 0.6
+            acousticness = min(1.0, max(0.0, acousticness))
 
             # 6. Instrumentalness
-            # Based on spectral flatness (flat = noisy/speech/percussion, not flat = tonal/instruments)
+            # High spectral flatness = noisy (more likely speech/percussion)
+            # Low flatness = tonal (instruments/melodic)
             flatness = librosa.feature.spectral_flatness(y=y)
-            instrumentalness = 1.0 - float(np.mean(flatness))
-            instrumentalness = min(1.0, max(0.0, instrumentalness - 0.3))
+            avg_flatness = float(np.mean(flatness))
+            # Heuristic: if it's high energy and not flat, it's likely instrumental EDM/Makina
+            instrumentalness = 1.0 - avg_flatness
+            if energy > 0.6:
+                instrumentalness = min(1.0, instrumentalness * 1.2)
+            instrumentalness = min(1.0, max(0.0, instrumentalness - 0.4))
 
             # 7. Speechiness
             # Zero crossing rate is higher for speech

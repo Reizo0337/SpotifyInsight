@@ -118,12 +118,34 @@ class SpotifyService:
             # Ordenamos por popularidad para evitar "versiones" o temas irrelevantes
             tracks.sort(key=lambda x: x.get("popularity", 0), reverse=True)
             t = tracks[0]
+            
+            # Fetch audio features for the winner
+            features = {}
+            try:
+                af = self.sp.audio_features([t["id"]])
+                if af and af[0]:
+                    features = af[0]
+            except Exception:
+                pass
+
             return {
                 "name": t["name"],
                 "artist": t["artists"][0]["name"],
                 "id": t["id"],
                 "artist_id": t["artists"][0]["id"],
-                "preview_url": t.get("preview_url")
+                "preview_url": t.get("preview_url"),
+                "target_features": {
+                    "danceability": features.get("danceability", 0),
+                    "energy": features.get("energy", 0),
+                    "tempo": features.get("tempo", 0),
+                    "valence": features.get("valence", 0),
+                    "acousticness": features.get("acousticness", 0),
+                    "instrumentalness": features.get("instrumentalness", 0),
+                    "speechiness": features.get("speechiness", 0),
+                    "loudness": features.get("loudness", 0),
+                    "key": features.get("key", 0),
+                    "mode": features.get("mode", 0)
+                } if features else None
             }
         return None
 
@@ -137,10 +159,10 @@ class SpotifyService:
         past_ids = set()
         try:
             import pandas as pd
-            DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "processed", "user_tracks.csv")
-            if os.path.exists(DATA_PATH):
-                df_hist = pd.read_csv(DATA_PATH)
-                past_ids = set(df_hist["spotify_id"].dropna().unique())
+            LIBRARY_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "processed", "saved_tracks.csv")
+            if os.path.exists(LIBRARY_PATH):
+                df_lib = pd.read_csv(LIBRARY_PATH)
+                past_ids = set(df_lib["spotify_id"].dropna().unique())
         except Exception:
             pass
 
@@ -164,10 +186,6 @@ class SpotifyService:
         # Eliminar posibles duplicados manteniendo el orden
         final_seeds = list(dict.fromkeys(seeds))[:5]
         
-        # Intentos escalonados con nueva ponderación
-        # Intento 1: La mezcla 80/20
-        # Intento 2: Solo la canción (100% peso)
-        # Intento 3: Solo el artista (100% peso)
         attempts = []
         
         # Filtramos seeds para que no haya Nones en las peticiones
@@ -179,6 +197,16 @@ class SpotifyService:
                              "seed_artists": artists_only if artists_only else None})
         
         attempts.append({"seed_tracks": [seed_song_id]})
+        
+        # New attempt with audio feature targets if provided
+        if "target_features" in target_track:
+            tf = target_track["target_features"]
+            attempts.append({
+                "seed_tracks": [seed_song_id],
+                "target_danceability": tf.get("danceability"),
+                "target_energy": tf.get("energy"),
+                "target_valence": tf.get("valence")
+            })
         
         if seed_artist_id:
             attempts.append({"seed_artists": [seed_artist_id]})
@@ -227,10 +255,10 @@ class SpotifyService:
             
         return []
 
-    def _fetch_recs(self, limit, seed_tracks=None, seed_artists=None, market=None):
+    def _fetch_recs(self, limit, seed_tracks=None, seed_artists=None, market=None, **kwargs):
         if not self.sp: return []
         # Importante: spotipy usa 'country' para el market en recommendations
-        results = self.sp.recommendations(seed_tracks=seed_tracks, seed_artists=seed_artists, limit=limit, country=market)
+        results = self.sp.recommendations(seed_tracks=seed_tracks, seed_artists=seed_artists, limit=limit, country=market, **kwargs)
         return [{
             "track_name": t["name"],
             "artist": t["artists"][0]["name"],

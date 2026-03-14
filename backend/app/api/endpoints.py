@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException
+import pandas as pd
 from ..services.spotify_service import SpotifyService
 from ..services.data_service import DataService
 from ..services.analysis_service import AnalysisService
@@ -30,65 +31,83 @@ async def get_analysis():
     return stats
 
 @router.get("/recommendations")
-async def get_recommendations(limit: int = 10, song: str = None):
-    df = DataService.load_data()
+async def get_recommendations(limit: int = 10, mode: str = "vibe", song: str = None):
+    """
+    Get track recommendations.
+    Modes:
+    - 'vibe': Local library matching using IA features (Content-Based)
+    - 'discovery': Spotify-led discovery weighted by your taste vector.
+    """
+    library_df = DataService.load_library()
+    user_df = DataService.load_data() # Returns joined view
     spotify = SpotifyService()
     
     if not spotify.is_connected():
-        raise HTTPException(status_code=503, detail="Spotify service is not available. Please check your internet connection or credentials.")
+        raise HTTPException(status_code=503, detail="Spotify disconnected")
 
-    # Si el usuario busca una canción específica
+    # If song is specified, we find recommendations based AT LEAST on that song
+    target_track = None
     if song:
         target_track = spotify.search_track(song)
         if not target_track:
-            raise HTTPException(status_code=404, detail="Song not found on Spotify")
+            raise HTTPException(status_code=404, detail="Song not found")
             
-        # Obtener IDs de los gustos del usuario del dataset local
-        user_taste_ids = []
-        if not df.empty and "spotify_id" in df.columns:
-            user_taste_ids = df[df["spotify_id"] != "0"]["spotify_id"].dropna().tail(10).tolist()
-        
-        recs = spotify.get_recommendations_weighted(target_track, user_taste_ids, limit=limit)
-        return {
-            "based_on": target_track,
-            "weight": "80% song / 20% your taste",
-            "recommendations": recs
-        }
+        # Enrich target_track with features if available locally, already in search, or from analysis
+        local_match = library_df[library_df["spotify_id"] == target_track["id"]]
+        if not local_match.empty:
+            target_track["target_features"] = local_match.iloc[0].to_dict()
+        elif target_track.get("target_features"):
+            # Already have them from Spotify search
+            pass
+        else:
+            # Fallback to direct analysis if not in library or search features failed
+            from ..services.audio_analysis_service import AudioAnalysisService
+            preview = target_track.get("preview_url") or AudioAnalysisService.get_preview_from_itunes(target_track["name"], target_track["artist"])
+            if preview:
+                target_track["target_features"] = AudioAnalysisService.analyze_preview(preview)
 
-    # Comportamiento original si no hay 'song'
-    if df.empty:
-        return {"status": "no_data", "message": "No data available. Please sync first."}
-    
-    # Try local recommendation engine first
-    recs = RecommendationService.get_recommendations(df, n_recommendations=limit)
-    
-    # If local engine fails (due to lack of audio features), fallback to Spotify API
-    if not recs:
-        try:
-            spotify = SpotifyService()
-            # Try Track Seeds first
-            if "spotify_id" in df.columns:
-                seed_ids = df[df["spotify_id"] != "0"]["spotify_id"].dropna().tail(5).tolist()
-                recs = spotify.get_recommendations_from_spotify(seed_ids, limit=limit)
-                
-            # If Track Seeds also fails (404), try Artist Seeds
-            if not recs and "artist_id" in df.columns:
-                artist_seeds = df[df["artist_id"].notna()]["artist_id"].tail(5).tolist()
-                try:
-                    results = spotify.sp.recommendations(seed_artists=artist_seeds, limit=limit)
-                    recs = [{
-                        "track_name": t["name"],
-                        "artist": t["artists"][0]["name"],
-                        "album": t["album"]["name"],
-                        "popularity": t.get("popularity", 0),
-                        "spotify_id": t["id"]
-                    } for t in results["tracks"]]
-                except Exception:
-                    pass
-        except Exception:
-            recs = []
+        # Persistence: If we have features (from Spotify OR analysis), save to library
+        if target_track.get("target_features"):
+            save_data = {**target_track, **target_track["target_features"]}
+            DataService.persist_track(save_data)
+
+    # 1. DISCOVERY MODE (Spotify-led)
+    if mode == "discovery":
+        user_taste_ids = user_df["spotify_id"].tail(10).tolist() if not user_df.empty else []
+        
+        if target_track:
+            return spotify.get_recommendations_weighted(target_track, user_taste_ids, limit=limit)
+        else:
+            # Random seed from taste
+            seed_ids = user_df["spotify_id"].sample(min(5, len(user_df))).tolist() if not user_df.empty else []
+            return spotify.get_recommendations_from_spotify(seed_ids, limit=limit)
+
+    # 2. VIBE MODE (Local Library matching)
+    if mode == "vibe":
+        if library_df.empty:
+            return {"status": "no_data", "message": "Library is empty."}
             
-    return recs
+        # If we have a target track, recommend similar to it
+        if target_track and "target_features" in target_track:
+            # We wrap target features in a mock DF for RecommendationService
+            target_df = pd.DataFrame([target_track["target_features"]])
+            return RecommendationService.get_recommendations(library_df, user_profile_tracks=target_df, n_recommendations=limit)
+        
+        # Default: recommend based on recent history
+        return RecommendationService.get_recommendations(library_df, user_profile_tracks=None, n_recommendations=limit)
+
+    return {"error": "Invalid mode. Use 'vibe' or 'discovery'"}
+
+@router.get("/similar-tracks")
+async def get_similar_tracks(track_id: str, limit: int = 5):
+    """Finds similar tracks in local library for a given ID."""
+    library_df = DataService.load_library()
+    match = library_df[library_df["spotify_id"] == track_id]
+    
+    if match.empty:
+        raise HTTPException(status_code=404, detail="Track not in local records")
+        
+    return RecommendationService.get_recommendations(library_df, user_profile_tracks=match, n_recommendations=limit)
 
 @router.get("/analyze-track")
 async def analyze_track(song: str, artist: str = ""):
@@ -123,12 +142,17 @@ async def analyze_track(song: str, artist: str = ""):
     if not analysis:
         raise HTTPException(status_code=500, detail="Could not analyze audio preview")
 
-    return {
-        "song_name": track["name"],
+    # Persistence: Save the analyzed track to library
+    full_track_data = {
+        "track_name": track["name"],
         "artist": track["artist"],
         "spotify_id": track["id"],
+        "artist_id": track.get("artist_id"),
         **analysis
     }
+    DataService.persist_track(full_track_data)
+
+    return full_track_data
 
 @router.get("/user-profile")
 async def get_user_profile():
