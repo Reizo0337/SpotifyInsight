@@ -162,6 +162,14 @@ class DataService:
                     if (existing_row.get("duration_ms", 0) == 0) and row.get("duration_ms", 0) > 0:
                         lib_df.loc[idx_mask, "duration_ms"] = row["duration_ms"]
                         updated = True
+                    # If existing has 0 popularity but new has one, update
+                    if (existing_row.get("popularity", 0) == 0) and row.get("popularity", 0) > 0:
+                        lib_df.loc[idx_mask, "popularity"] = int(row["popularity"])
+                        updated = True
+                    # If existing has "Unknown" genre but new has one, update
+                    if (existing_row.get("genre") == "Unknown") and row.get("genre") != "Unknown":
+                        lib_df.loc[idx_mask, "genre"] = row["genre"]
+                        updated = True
             
             if updated:
                 cls.save_library(lib_df)

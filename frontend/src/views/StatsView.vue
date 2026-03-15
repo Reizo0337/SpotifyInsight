@@ -2,8 +2,7 @@
 import { useMusicStore } from '../stores/musicStore'
 import { useRouter } from 'vue-router'
 import {
-  ChevronLeft, TrendingUp, Users, Radio, Disc,
-  Trophy, Award, Medal, Music, Mic2
+  ChevronLeft, TrendingUp, Mic2, Radio, Trophy, Award, Medal
 } from 'lucide-vue-next'
 
 const musicStore = useMusicStore()
@@ -61,10 +60,10 @@ const getRankIcon = (index: number) => {
       <section class="stat-section">
         <h2><Mic2 :size="20" /> Top 10 Artistas</h2>
         <div class="ranking-list">
-          <div v-for="(count, artist, index) in musicStore.stats?.top_artists" :key="artist" class="rank-item" :class="'rank-' + (index + 1)">
+          <div v-for="(count, artist, i) in musicStore.stats?.top_artists" :key="artist" class="rank-item" :class="'rank-' + ((i || 0) + 1)">
             <div class="rank-info">
-              <span class="rank-number">{{ index + 1 }}</span>
-              <component :is="getRankIcon(index)" v-if="index < 3" :size="18" :color="getTrophyColor(index)" class="trophy" />
+              <span class="rank-number">{{ (i || 0) + 1 }}</span>
+              <component :is="getRankIcon(Number(i) || 0)" v-if="Number(i) < 3" :size="18" :color="getTrophyColor(Number(i) || 0)" class="trophy" />
               <span class="item-name">{{ artist }}</span>
             </div>
             <span class="item-meta">{{ count }} reproducciones</span>
@@ -74,12 +73,12 @@ const getRankIcon = (index: number) => {
 
       <section class="stat-section">
         <h2><Radio :size="20" /> Top 10 Géneros</h2>
-        <div class="ranking-list">
-          <div v-for="(percent, genre, index) in musicStore.stats?.top_genres" :key="genre" class="rank-item" :class="'rank-' + (index + 1)">
+        <div class="ranking-list" v-if="musicStore.stats?.top_genres">
+          <div v-for="(percent, name, i) in musicStore.stats.top_genres" :key="name" class="rank-item" :class="'rank-' + ((i || 0) + 1)">
             <div class="rank-info">
-              <span class="rank-number">{{ index + 1 }}</span>
-              <component :is="getRankIcon(index)" v-if="index < 3" :size="18" :color="getTrophyColor(index)" class="trophy" />
-              <span class="item-name">{{ genre }}</span>
+              <span class="rank-number">{{ (i || 0) + 1 }}</span>
+              <component :is="getRankIcon(Number(i) || 0)" v-if="Number(i) < 3" :size="18" :color="getTrophyColor(Number(i) || 0)" class="trophy" />
+              <span class="item-name">{{ name }}</span>
             </div>
             <span class="item-meta">{{ percent }}% afinidad</span>
           </div>

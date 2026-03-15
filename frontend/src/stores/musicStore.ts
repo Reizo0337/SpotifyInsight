@@ -33,6 +33,7 @@ interface MusicState {
   persistedTime: number
   isReload: boolean
   shouldAutoResume: boolean
+  isPlaying: boolean 
 }
 
 export const useMusicStore = defineStore('music', {
@@ -63,6 +64,7 @@ export const useMusicStore = defineStore('music', {
     persistedTime: 0,
     isReload: (performance.getEntriesByType('navigation')[0] as any)?.type === 'reload',
     shouldAutoResume: false,
+    isPlaying: false,
   }),
 
   getters: {
@@ -116,8 +118,10 @@ export const useMusicStore = defineStore('music', {
 
     // Persistence
     savePlaybackState(isPlaying: boolean = false) {
+      this.isPlaying = isPlaying
       const state = {
         nowPlaying: this.nowPlaying,
+        trackId: this.nowPlaying?.spotify_id || this.nowPlaying?.id,
         queue: this.queue,
         currentIndex: this.currentIndex,
         isShuffle: this.isShuffle,
@@ -130,9 +134,10 @@ export const useMusicStore = defineStore('music', {
 
     getState(): boolean {
       const saved = localStorage.getItem('m-playback-state')
-      if (!saved) return false
+      if (!saved) return this.isPlaying
       try {
-        return JSON.parse(saved).wasPlaying || false
+        const p = JSON.parse(saved)
+        return p.wasPlaying || false
       } catch { return false }
     },
 
@@ -153,6 +158,7 @@ export const useMusicStore = defineStore('music', {
         // Auto-resume if it was a reload and was playing
         if (this.isReload && p.wasPlaying) {
           this.shouldAutoResume = true
+          this.isPlaying = true
         }
 
         if (this.nowPlaying && !this.streamUrl) {
@@ -192,6 +198,7 @@ export const useMusicStore = defineStore('music', {
     // Playback control
     setNowPlaying(track: any, contextQueue?: any[]) {
       this.nowPlaying = track
+      this.isPlaying = true // User explicitly started a track
       if (contextQueue) {
         this.queue = [...contextQueue]
         this.currentIndex = contextQueue.findIndex(t => 
@@ -204,14 +211,14 @@ export const useMusicStore = defineStore('music', {
       if (!MOCK_MODE && track?.track_name) {
         this.streamTrack(track.track_name, track.artist || '', track.spotify_id || track.id)
       }
-      this.savePlaybackState()
+      this.savePlaybackState(true)
     },
 
     addToQueue(track: any) {
       this.queue.push(track)
       if (this.isShuffle) this.shuffledQueue.push(track)
       if (this.currentIndex === -1) this.setNowPlaying(track)
-      this.savePlaybackState(this.getState())
+      this.savePlaybackState(this.isPlaying)
     },
 
     insertNext(track: any) {

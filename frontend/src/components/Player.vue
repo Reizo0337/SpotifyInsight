@@ -47,28 +47,33 @@ watch(streamUrl, (url) => {
     audioRef.value.volume = isMuted.value ? 0 : volume.value
     audioRef.value.playbackRate = playbackRate.value
     hasResumed.value = false
-    
-    // Regular play (not reload)
-    if (!musicStore.shouldAutoResume) {
-      audioRef.value.play().then(() => { isPlaying.value = true }).catch(() => {})
-    }
   }
 })
 
-// Trigger auto-resume from reload
-watch(() => musicStore.shouldAutoResume, (val) => {
-  if (val && audioRef.value && audioRef.value.src) {
-    audioRef.value.play()
-      .then(() => { 
-        isPlaying.value = true
-        musicStore.shouldAutoResume = false 
-      })
-      .catch(err => {
-        console.warn('Auto-play blocked by browser. User interaction required.', err)
-        musicStore.shouldAutoResume = false
-      })
+const tryPlay = async () => {
+  if (!audioRef.value || !audioRef.value.src) return
+  try {
+    await audioRef.value.play()
+    isPlaying.value = true
+    musicStore.isPlaying = true
+    musicStore.shouldAutoResume = false
+  } catch (err) {
+    console.warn('Autoplay blocked or interuppted:', err)
+    isPlaying.value = false
+    // Don't flip musicStore.isPlaying to false immediately, 
+    // maybe user will click something else.
   }
-}, { immediate: true })
+}
+
+// Trigger auto-resume from reload or external play request
+watch(() => musicStore.isPlaying, (shouldPlay) => {
+  if (shouldPlay && !isPlaying.value) {
+    tryPlay()
+  } else if (!shouldPlay && isPlaying.value) {
+    audioRef.value?.pause()
+    isPlaying.value = false
+  }
+})
 
 watch(isPlaying, (val) => {
   musicStore.savePlaybackState(val)
@@ -91,7 +96,7 @@ const togglePlay = () => {
     a.pause()
     isPlaying.value = false
   } else {
-    a.play().then(() => { isPlaying.value = true }).catch(console.error)
+    tryPlay()
   }
 }
 
@@ -109,12 +114,29 @@ const onTimeUpdate = () => {
 }
 
 const onCanPlay = () => {
-  if (!hasResumed.value && audioRef.value) {
-    const saved = Number(localStorage.getItem('m-time'))
-    if (saved > 0 && saved < (audioRef.value.duration || Infinity)) {
-      audioRef.value.currentTime = saved
+  const a = audioRef.value
+  if (!a) return
+
+  if (!hasResumed.value) {
+    // Only resume time if it's the same track
+    const savedState = JSON.parse(localStorage.getItem('m-playback-state') || '{}')
+    const currentId = musicStore.nowPlaying?.spotify_id || musicStore.nowPlaying?.id
+    
+    if (savedState.trackId === currentId) {
+      const savedTime = Number(localStorage.getItem('m-time'))
+      if (savedTime > 0 && savedTime < (a.duration || Infinity)) {
+        a.currentTime = savedTime
+      }
+    } else {
+      // Clear time for new track
+      localStorage.setItem('m-time', '0')
     }
     hasResumed.value = true
+  }
+
+  // If we intended to play, do it now that it's buffered
+  if (musicStore.isPlaying || musicStore.shouldAutoResume) {
+    tryPlay()
   }
 }
 

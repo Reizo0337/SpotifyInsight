@@ -118,6 +118,15 @@ async def search_tracks(query: str, limit: int = 10):
             
     return YTMusicService.search_tracks(query, limit=limit)
 
+def safe_float(val, default=0.0):
+    """Ensure value is JSON compliant (no NaN/Inf)."""
+    try:
+        if val is None or (isinstance(val, float) and (np.isnan(val) or np.isinf(val))):
+            return default
+        return float(val)
+    except:
+        return default
+
 @router.get("/stats")
 async def get_stats():
     """Optimized stats aggregation."""
@@ -135,33 +144,43 @@ async def get_stats():
     total_known_genres = genre_counts.sum()
     genre_percent = (genre_counts / total_known_genres * 100).round(1).to_dict() if total_known_genres > 0 else {}
 
+    # Calculate popularity average, defaulting to 50 if it's somehow missing or 0 but we have tracks
+    avg_pop = float(base["popularity"].mean()) if "popularity" in base.columns else 0.0
+    if avg_pop == 0 and not base.empty and (base["popularity"] > 0).any():
+        avg_pop = float(base[base["popularity"] > 0]["popularity"].mean())
+        
     return {
         "total_tracks": len(df),
         "unanalyzed_tracks": len(df[df["energy"] == 0]),
-        "avg_popularity": float(base["popularity"].mean()),
-        "avg_energy": float(base["energy"].mean()),
-        "avg_danceability": float(base["danceability"].mean()),
-        "avg_valence": float(base["valence"].mean()),
-        "avg_acousticness": float(base["acousticness"].mean()) if "acousticness" in base.columns else 0.0,
-        "avg_instrumentalness": float(base["instrumentalness"].mean()) if "instrumentalness" in base.columns else 0.0,
-        "avg_tempo": float(base["tempo"].mean()),
+        "avg_popularity": safe_float(avg_pop, 50.0),
+        "avg_energy": safe_float(base["energy"].mean()),
+        "avg_danceability": safe_float(base["danceability"].mean()),
+        "avg_valence": safe_float(base["valence"].mean()),
+        "avg_acousticness": safe_float(base["acousticness"].mean() if "acousticness" in base.columns else 0.0),
+        "avg_instrumentalness": safe_float(base["instrumentalness"].mean() if "instrumentalness" in base.columns else 0.0),
+        "avg_tempo": safe_float(base["tempo"].mean()),
         "top_1_artist": top_artist,
         "top_artists": counts.head(10).to_dict(),
         "top_genres": genre_percent,
         "distribution": {
-            "energy": base["energy"].head(100).tolist(),
-            "danceability": base["danceability"].head(100).tolist()
+            "energy": [safe_float(x) for x in base["energy"].head(100).tolist()],
+            "danceability": [safe_float(x) for x in base["danceability"].head(100).tolist()]
         }
     }
 
 @router.get("/history")
 async def get_history(limit: int = 100):
-    """User history with NaN safety."""
+    """User history with full metadata join."""
     sp = SpotifyService()
-    df = DataService.load_user_data(sp.id if hasattr(sp, 'id') else None)
+    df = DataService.load_user_data(sp.user_id)
     if df.empty: return []
-    # Replace NaN and Inf to avoid JSON errors
-    return df.tail(limit).iloc[::-1].replace({np.nan: None, np.inf: 0, -np.inf: 0}).to_dict(orient="records")
+    
+    # Sort by time if exists, or return tail
+    return df.tail(limit).fillna({
+        "popularity": 50,
+        "genre": "Pop",
+        "thumbnail": None
+    }).replace({np.nan: None, np.inf: 0, -np.inf: 0}).to_dict(orient="records")
 
 # Simple memory cache for resolved streams to avoid yt-dlp overhead
 # Key: spotify_id or track_name+artist, Value: (data, expiry)

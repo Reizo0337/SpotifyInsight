@@ -31,6 +31,32 @@ class AudioAnalysisService:
         return None
 
     @staticmethod
+    def get_itunes_metadata(song, artist):
+        """
+        Autonomous fallback to fetch popularity and genre from iTunes.
+        """
+        try:
+            query = f"{song} {artist}"
+            url = "https://itunes.apple.com/search"
+            params = {"term": query, "limit": 10, "media": "music"}
+            response = requests.get(url, params=params, timeout=5)
+            if response.status_code == 200:
+                results = response.json().get("results", [])
+                if results:
+                    # Use the first result (most relevant)
+                    top = results[0]
+                    # Simulate popularity from rank (not perfect but better than 0)
+                    # We can use the result count or just default to 50 if found
+                    return {
+                        "genre": top.get("primaryGenreName", "Unknown"),
+                        "popularity": 60 + (10 if "contentAdvisoryRating" in top else 0), # Heuristic
+                        "thumbnail": top.get("artworkUrl100")
+                    }
+        except Exception:
+            pass
+        return {"genre": "Unknown", "popularity": 0, "thumbnail": None}
+
+    @staticmethod
     def decode_with_av(temp_path):
         """
         Decodes audio using PyAV (FFmpeg based) and returns (y, sr)

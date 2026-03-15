@@ -67,12 +67,23 @@ class SpotifyService:
 
     def get_artists(self, artist_ids):
         all_artists = []
+        artist_ids = [aid for aid in artist_ids if aid]
         for i in range(0, len(artist_ids), 50):
             batch = artist_ids[i:i+50]
             res = self._call_api("artists", batch)
             if res and "artists" in res:
                 all_artists.extend(res["artists"])
         return all_artists
+
+    def get_tracks(self, track_ids):
+        all_tracks = []
+        track_ids = [tid for tid in track_ids if tid]
+        for i in range(0, len(track_ids), 50):
+            batch = track_ids[i:i+50]
+            res = self._call_api("tracks", batch)
+            if res and "tracks" in res:
+                all_tracks.extend(res["tracks"])
+        return all_tracks
 
     def get_top_tracks_with_features(self, limit=50):
         t_start = time.time()
@@ -208,3 +219,75 @@ class SpotifyService:
             "popularity": t.get("popularity", 0),
             "spotify_id": t["id"]
         } for t in results["tracks"]]
+
+    def repair_library_metadata(self):
+        """Autonomously find and fix missing popularity, genres, and durations."""
+        from .data_service import DataService
+        from .audio_analysis_service import AudioAnalysisService
+        import pandas as pd # Added import for pd.isna
+        df = DataService.load_library()
+        if df.empty: return False
+        
+        # 1. Selection: Find tracks with missing data (including thumbnails)
+        mask = (df["popularity"] == 0) | (df["genre"] == "Unknown") | (df["thumbnail"].isna()) | (df["thumbnail"] == "")
+        needs_repair = df[mask].copy()
+        if needs_repair.empty: return True
+        
+        Logger.info("SPOTIFY", f"Starting library metadata repair for {len(needs_repair)} tracks...")
+        
+        # BATCHED FETCH: Spotify only allows batches of 50 for /tracks and /artists
+        all_ids = needs_repair["spotify_id"].tolist()
+        updated_rows = 0
+        
+        for i in range(0, len(all_ids), 50):
+            batch_df = needs_repair.iloc[i:i+50]
+            batch_ids = batch_df["spotify_id"].tolist()
+            
+            # ATTEMPT SPOTIFY FIRST
+            sp_tracks = self.get_tracks(batch_ids)
+            track_lookup = {t["id"]: t for t in sp_tracks if t}
+            
+            # Fetch Artists (for genres)
+            artist_ids = list(set([t["artists"][0]["id"] for t in sp_tracks if t and t.get("artists")]))
+            sp_artists = self.get_artists(artist_ids)
+            artist_lookup = {a["id"]: a["genres"][0] if a.get("genres") else "Unknown" for a in sp_artists if a}
+            
+            # Update the library dataframe
+            for idx, row in batch_df.iterrows():
+                sid = row["spotify_id"]
+                track = track_lookup.get(sid)
+                
+                # REPAIR WITH SPOTIFY DATA IF AVAILABLE
+                if track:
+                    mask = df["spotify_id"] == sid
+                    if track.get("popularity", 0) > 0:
+                        df.loc[mask, "popularity"] = track["popularity"]
+                    if track.get("duration_ms", 0) > 0:
+                        df.loc[mask, "duration_ms"] = track["duration_ms"]
+                    if track.get("album") and track["album"].get("images"):
+                        df.loc[mask, "thumbnail"] = track["album"]["images"][0]["url"]
+                    if track.get("artists") and track["artists"][0]["id"] in artist_lookup:
+                        df.loc[mask, "genre"] = artist_lookup[track["artists"][0]["id"]]
+                
+                # AUTONOMOUS iTunes FALLBACK (If still missing or Spotify failed)
+                mask = df["spotify_id"] == sid
+                lib_row = df.loc[mask].iloc[0]
+                if (lib_row.get("popularity", 0) == 0) or (lib_row.get("genre") == "Unknown") or (not lib_row.get("thumbnail") or pd.isna(lib_row.get("thumbnail"))):
+                    itunes = AudioAnalysisService.get_itunes_metadata(row["track_name"], row["artist"])
+                    if itunes:
+                        if lib_row.get("popularity", 0) == 0:
+                            df.loc[mask, "popularity"] = itunes["popularity"]
+                        if lib_row.get("genre") == "Unknown":
+                            df.loc[mask, "genre"] = itunes["genre"]
+                        if not lib_row.get("thumbnail") or pd.isna(lib_row.get("thumbnail")):
+                            df.loc[mask, "thumbnail"] = itunes.get("thumbnail")
+                        updated_rows += 1
+                
+                # Small sleep to be polite to iTunes
+                time.sleep(0.1)
+            
+        if updated_rows > 0:
+            DataService.save_library(df)
+            Logger.info("SPOTIFY", f"Library repair completed. {updated_rows} tracks updated.")
+            return True
+        return False
