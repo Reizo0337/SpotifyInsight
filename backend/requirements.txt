@@ -13,3 +13,7 @@ soundfile
 pydub
 ffmpeg-python
 decorator
+pyarrow
+scikit-learn
+tqdm
+datasets

@@ -1,84 +1,79 @@
-import os
-import spotipy
-from spotipy.oauth2 import SpotifyOAuth
-from dotenv import load_dotenv
-
-load_dotenv()
+import time
+import requests
+from ..core.spotify_auth import get_spotify_client
+from ..core.logging import Logger
 
 class SpotifyService:
-    _forbidden_endpoints = set() # To skip 403-ing endpoints (Spotify API restrictions)
+    _forbidden_endpoints = set()
+    
     def __init__(self):
-        try:
-            self.sp = spotipy.Spotify(
-                auth_manager=SpotifyOAuth(
-                    client_id=os.getenv("SPOTIPY_CLIENT_ID"),
-                    client_secret=os.getenv("SPOTIPY_CLIENT_SECRET"),
-                    redirect_uri="http://127.0.0.1:8080/callback",
-                    scope="user-top-read user-library-read user-read-recently-played playlist-read-private playlist-read-collaborative user-follow-read user-read-playback-state user-read-currently-playing user-modify-playback-state"
-                    )
-                )
-            user = self.sp.current_user()
-            self.user_name = user["display_name"] if user else "Unknown"
-            self.user_id = user["id"] if user else "Unknown"
-            print(f"[SPOTIFY] Connected as {self.user_name} ({self.user_id})")
-        except Exception as e:
-            print(f"[SPOTIFY] Auth Error: {e}")
-            self.sp = None
+        self.sp = get_spotify_client()
+        if self.sp:
+            try:
+                user = self.sp.current_user()
+                self.user_name = user["display_name"]
+                self.user_id = user["id"]
+                Logger.info("SPOTIFY", f"Connected as {self.user_name}")
+            except Exception:
+                self.sp = None # Disable if auth fails
+                self.user_name = "Unknown"
+                self.user_id = "Unknown"
+        else:
             self.user_name = "Unknown"
             self.user_id = "Unknown"
 
     def is_connected(self):
         return self.sp is not None
 
-    def get_audio_features(self, track_ids):
-        """Fetch audio features with circuit breaker protection."""
-        if not self.sp or "audio_features" in SpotifyService._forbidden_endpoints:
-            return [None] * len(track_ids)
-        
-        try:
-            return self.sp.audio_features(track_ids)
-        except Exception as e:
-            if "403" in str(e) or "Forbidden" in str(e):
-                print(f"[SPOTIFY] !!! 403 FORBIDDEN DETECTED on audio_features !!! Skipping for this session.")
-                SpotifyService._forbidden_endpoints.add("audio_features")
-            return [None] * len(track_ids)
-
-    def get_artists(self, artist_ids):
-        """Fetch artists data with circuit breaker protection."""
-        if not self.sp or "artists" in SpotifyService._forbidden_endpoints:
-            return []
+    def _call_api(self, method_name, *args, **kwargs):
+        """Wrapper for API calls with circuit breaker."""
+        if not self.sp or method_name in self._forbidden_endpoints:
+            return None
             
         try:
-            # Spotify allows 50 artists per request
-            all_artists = []
-            for i in range(0, len(artist_ids), 50):
-                batch = artist_ids[i:i+50]
-                results = self.sp.artists(batch)
-                if results and "artists" in results:
-                    all_artists.extend(results["artists"])
-            return all_artists
+            func = getattr(self.sp, method_name)
+            return func(*args, **kwargs)
         except Exception as e:
-            if "403" in str(e) or "Forbidden" in str(e):
-                print(f"[SPOTIFY] !!! 403 FORBIDDEN DETECTED on artists !!! Skipping for this session.")
-                SpotifyService._forbidden_endpoints.add("artists")
-            return []
+            msg = str(e)
+            if "403" in msg or "Forbidden" in msg:
+                Logger.error("SPOTIFY", f"Forbidden on {method_name}. Disabling for this session.")
+                self._forbidden_endpoints.add(method_name)
+            elif "429" in msg or "Rate limit" in msg:
+                Logger.warning("SPOTIFY", f"Rate Limit (429) hit on {method_name}. Disabling all Spotify calls for now.")
+                # Disable all major calls to avoid further blocking
+                self._forbidden_endpoints.add("audio_features")
+                self._forbidden_endpoints.add("current_user_top_tracks")
+                self._forbidden_endpoints.add("current_user_recently_played")
+                self._forbidden_endpoints.add("recommendations")
+            else:
+                Logger.error("SPOTIFY", f"API Error on {method_name}: {e}")
+            return None
+
+    def get_audio_features(self, track_ids):
+        res = self._call_api("audio_features", track_ids)
+        return res if res else [None] * len(track_ids)
+
+    def get_artists(self, artist_ids):
+        all_artists = []
+        for i in range(0, len(artist_ids), 50):
+            batch = artist_ids[i:i+50]
+            res = self._call_api("artists", batch)
+            if res and "artists" in res:
+                all_artists.extend(res["artists"])
+        return all_artists
 
     def get_top_tracks_with_features(self, limit=50):
-        import time
         t_start = time.time()
         if not self.sp: return []
         
-        results = self.sp.current_user_top_tracks(time_range="medium_term", limit=limit)
+        results = self._call_api("current_user_top_tracks", time_range="medium_term", limit=limit)
+        if not results or "items" not in results: return []
+        
         tracks = results["items"]
-        if not tracks: return []
-            
         track_ids = [t["id"] for t in tracks]
         
-        # Optimization: Use global cached index
         from .data_service import DataService
-        DataService.load_library() # Ensures cache is populated
-        
-        lib_lookup = DataService._library_indexed_cache
+        lib_lookup = DataService.get_indexed_library()
         
         final_features = {}
         missing_ids = []
@@ -90,67 +85,30 @@ class SpotifyService:
                 missing_ids.append(tid)
         
         if missing_ids:
-            t_af = time.time()
             af_list = self.get_audio_features(missing_ids)
             for idx, af in enumerate(af_list):
-                if af:
-                    final_features[missing_ids[idx]] = af
-            print(f"[SPOTIFY] audio_features processed in {time.time()-t_af:.3f}s")
+                if af: final_features[missing_ids[idx]] = af
 
-        # Artist genres
-        t_genre = time.time()
         artist_ids = list(set([t["artists"][0]["id"] for t in tracks if t.get("artists")]))
-        artist_genres = {}
+        artist_genres = {a["id"]: a["genres"][0] for a in self.get_artists(artist_ids) if a and a.get("genres")}
         
-        artists_data = self.get_artists(artist_ids)
-        for artist in artists_data:
-            if artist and artist.get("genres"):
-                artist_genres[artist["id"]] = artist["genres"][0]
-        
-        print(f"[SPOTIFY] Genre fetching processed in {time.time()-t_genre:.3f}s")
-        
-        data = []
-        for track in tracks:
-            tid = track["id"]
-            feat = final_features.get(tid, {})
-            main_artist = track["artists"][0] if track.get("artists") else {}
-            data.append({
-                "track_name": track.get("name", "Unknown"),
-                "artist": main_artist.get("name", "Unknown"),
-                "artist_id": main_artist.get("id"),
-                "album": track.get("album", {}).get("name", "Unknown"),
-                "popularity": track.get("popularity", 0),
-                "genre": artist_genres.get(main_artist.get("id"), "Unknown"),
-                "danceability": feat.get("danceability", 0),
-                "energy": feat.get("energy", 0),
-                "tempo": feat.get("tempo", 0),
-                "valence": feat.get("valence", 0),
-                "acousticness": feat.get("acousticness", 0),
-                "instrumentalness": feat.get("instrumentalness", 0),
-                "speechiness": feat.get("speechiness", 0),
-                "loudness": feat.get("loudness", 0),
-                "key": feat.get("key", 0),
-                "mode": feat.get("mode", 0),
-                "spotify_id": tid
-            })
-        print(f"[SPOTIFY] get_top_tracks processed in {time.time()-t_start:.3f}s")
+        data = [self._map_track(t, final_features.get(t["id"], {}), artist_genres) for t in tracks]
+        Logger.time("SPOTIFY", "Top tracks processed", t_start)
         return data
 
     def get_recently_played_with_features(self, limit=50):
-        import time
         t_start = time.time()
         if not self.sp: return []
-        results = self.sp.current_user_recently_played(limit=limit)
+        
+        results = self._call_api("current_user_recently_played", limit=limit)
+        if not results or "items" not in results: return []
+        
         tracks = [item["track"] for item in results["items"] if item.get("track")]
         if not tracks: return []
             
-        track_ids = [t["id"] for t in tracks if t.get("id")]
-        
-        # Optimization: Use global cached index
+        track_ids = [t["id"] for t in tracks]
         from .data_service import DataService
-        DataService.load_library()
-        
-        lib_lookup = DataService._library_indexed_cache
+        lib_lookup = DataService.get_indexed_library()
         
         final_features = {}
         missing_ids = []
@@ -163,201 +121,68 @@ class SpotifyService:
         if missing_ids:
             af_list = self.get_audio_features(missing_ids)
             for idx, af in enumerate(af_list):
-                if af:
-                    final_features[missing_ids[idx]] = af
+                if af: final_features[missing_ids[idx]] = af
             
-        # Fetch artist genres
-        artist_genres = {}
         artist_ids = list(set([t["artists"][0]["id"] for t in tracks if t.get("artists")]))
-        artists_data = self.get_artists(artist_ids)
-        for artist in artists_data:
-            if artist and artist.get("genres"):
-                artist_genres[artist["id"]] = artist["genres"][0]
+        artist_genres = {a["id"]: a["genres"][0] for a in self.get_artists(artist_ids) if a and a.get("genres")}
 
-        data = []
-        for i, track in enumerate(tracks):
-            tid = track["id"]
-            feat = final_features.get(tid, {})
-            main_artist = track["artists"][0] if track.get("artists") else {}
-            data.append({
-                "track_name": track.get("name", "Unknown"),
-                "artist": main_artist.get("name", "Unknown"),
-                "artist_id": main_artist.get("id"),
-                "album": track.get("album", {}).get("name", "Unknown"),
-                "popularity": track.get("popularity", 0),
-                "genre": artist_genres.get(main_artist.get("id"), "Unknown"),
-                "danceability": feat.get("danceability", 0),
-                "energy": feat.get("energy", 0),
-                "tempo": feat.get("tempo", 0),
-                "valence": feat.get("valence", 0),
-                "acousticness": feat.get("acousticness", 0),
-                "instrumentalness": feat.get("instrumentalness", 0),
-                "speechiness": feat.get("speechiness", 0),
-                "loudness": feat.get("loudness", 0),
-                "key": feat.get("key", 0),
-                "mode": feat.get("mode", 0),
-                "spotify_id": tid
-            })
-        print(f"[SPOTIFY] get_recently_played processed in {time.time()-t_start:.3f}s")
+        data = [self._map_track(t, final_features.get(t["id"], {}), artist_genres) for t in tracks]
+        Logger.time("SPOTIFY", "Recently played processed", t_start)
         return data
 
+    def _map_track(self, track, features, artist_genres):
+        main_artist = track["artists"][0] if track.get("artists") else {}
+        return {
+            "track_name": track.get("name", "Unknown"),
+            "artist": main_artist.get("name", "Unknown"),
+            "artist_id": main_artist.get("id"),
+            "album": track.get("album", {}).get("name", "Unknown"),
+            "popularity": track.get("popularity", 0),
+            "genre": artist_genres.get(main_artist.get("id"), "Unknown"),
+            "danceability": features.get("danceability", 0),
+            "energy": features.get("energy", 0),
+            "tempo": features.get("tempo", 0),
+            "valence": features.get("valence", 0),
+            "acousticness": features.get("acousticness", 0),
+            "instrumentalness": features.get("instrumentalness", 0),
+            "speechiness": features.get("speechiness", 0),
+            "loudness": features.get("loudness", 0),
+            "key": features.get("key", 0),
+            "mode": features.get("mode", 0),
+            "spotify_id": track["id"]
+        }
+
     def search_track(self, query):
-        # Buscamos los 5 temas más relevantes para el query
-        results = self.sp.search(q=query, limit=5, type="track")
+        results = self._call_api("search", q=query, limit=5, type="track")
+        if not results: return None
+        
         tracks = results.get("tracks", {}).get("items", [])
-        if tracks:
-            # Ordenamos por popularidad para evitar "versiones" o temas irrelevantes
-            tracks.sort(key=lambda x: x.get("popularity", 0), reverse=True)
-            t = tracks[0]
-            
-            # Fetch audio features AND genre for the winner
-            features = {}
-            genre = "Unknown"
-            try:
-                # Get features
-                af = self.sp.audio_features([t["id"]])
-                if af and af[0]:
-                    features = af[0]
-                
-                # Get genre from artist metadata
-                artist_data = self.sp.artist(t["artists"][0]["id"])
-                if artist_data.get("genres"):
-                    genre = artist_data["genres"][0]
-            except Exception:
-                pass
+        if not tracks: return None
+        
+        tracks.sort(key=lambda x: x.get("popularity", 0), reverse=True)
+        t = tracks[0]
+        
+        af = self.get_audio_features([t["id"]])[0]
+        artist_data = self._call_api("artist", t["artists"][0]["id"])
+        genre = artist_data["genres"][0] if artist_data and artist_data.get("genres") else "Unknown"
 
-            return {
-                "name": t["name"],
-                "artist": t["artists"][0]["name"],
-                "id": t["id"],
-                "artist_id": t["artists"][0]["id"],
-                "genre": genre,
-                "preview_url": t.get("preview_url"),
-                "target_features": {
-                    "danceability": features.get("danceability", 0),
-                    "energy": features.get("energy", 0),
-                    "tempo": features.get("tempo", 0),
-                    "valence": features.get("valence", 0),
-                    "acousticness": features.get("acousticness", 0),
-                    "instrumentalness": features.get("instrumentalness", 0),
-                    "speechiness": features.get("speechiness", 0),
-                    "loudness": features.get("loudness", 0),
-                    "key": features.get("key", 0),
-                    "mode": features.get("mode", 0)
-                } if features else None
-            }
-        return None
+        return {
+            "name": t["name"],
+            "artist": t["artists"][0]["name"],
+            "id": t["id"],
+            "artist_id": t["artists"][0]["id"],
+            "genre": genre,
+            "preview_url": t.get("preview_url"),
+            "target_features": af if af else None
+        }
 
-    def get_recommendations_weighted(self, target_track, user_taste_ids, limit=10):
-        if not self.sp: return []
+    def get_recommendations_from_spotify(self, seed_track_ids, limit=10):
+        seeds = [str(tid) for tid in seed_track_ids if tid and str(tid) != "0"][:5]
+        if not seeds: return []
         
-        seed_song_id = target_track["id"]
-        seed_artist_id = target_track.get("artist_id")
+        results = self._call_api("recommendations", seed_tracks=seeds, limit=limit)
+        if not results: return []
         
-        # Obtener historial para filtrar (no recomendar lo que ya conoce)
-        past_ids = set()
-        try:
-            import pandas as pd
-            LIBRARY_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "processed", "saved_tracks.csv")
-            if os.path.exists(LIBRARY_PATH):
-                df_lib = pd.read_csv(LIBRARY_PATH)
-                past_ids = set(df_lib["spotify_id"].dropna().unique())
-        except Exception:
-            pass
-
-        # Ajuste de Pesos: 80% Canción / 20% Gustos
-        # Para 5 semillas: 4 semillas de la búsqueda (80%) + 1 de gustos (20%)
-        seeds = [seed_song_id]
-        if seed_artist_id:
-            seeds.append(seed_artist_id) # Usar el artista ayuda a fijar el género al 80%
-            seeds.append(seed_song_id)   # Repetir para reforzar peso (según comportamiento observado en API)
-            seeds.append(seed_artist_id)
-        else:
-            seeds.extend([seed_song_id] * 3)
-
-        # Limpiar y SHUFFLE de los gustos del usuario
-        import random
-        clean_user_seeds = [str(tid) for tid in user_taste_ids if tid and str(tid) != "0"]
-        random.shuffle(clean_user_seeds)
-
-        seeds.append(clean_user_seeds[0] if clean_user_seeds else seed_song_id) # 20% Gustos
-        
-        # Eliminar posibles duplicados manteniendo el orden
-        final_seeds = list(dict.fromkeys(seeds))[:5]
-        
-        attempts = []
-        
-        # Filtramos seeds para que no haya Nones en las peticiones
-        tracks_only = [s for s in final_seeds if s != seed_artist_id]
-        artists_only = [seed_artist_id] if seed_artist_id and seed_artist_id in final_seeds else []
-        
-        if tracks_only or artists_only:
-            attempts.append({"seed_tracks": tracks_only if tracks_only else None, 
-                             "seed_artists": artists_only if artists_only else None})
-        
-        attempts.append({"seed_tracks": [seed_song_id]})
-        
-        # New attempt with audio feature targets if provided
-        if "target_features" in target_track:
-            tf = target_track["target_features"]
-            attempts.append({
-                "seed_tracks": [seed_song_id],
-                "target_danceability": tf.get("danceability"),
-                "target_energy": tf.get("energy"),
-                "target_valence": tf.get("valence")
-            })
-        
-        if seed_artist_id:
-            attempts.append({"seed_artists": [seed_artist_id]})
-
-        for attempt in attempts:
-            if not attempt: continue
-            try:
-                # Intentamos obtener más (limit * 2) para poder filtrar los ya escuchados
-                results = self._fetch_recs(limit=limit*3, **attempt)
-                # Filtrar duplicados del historial
-                filtered = [r for r in results if r["spotify_id"] not in past_ids and r["spotify_id"] != seed_song_id]
-                if filtered:
-                    return filtered[:limit]
-            except Exception:
-                continue
-        
-        # FALLBACK 1: Top Tracks (Filtrados)
-        try:
-            if seed_artist_id:
-                results = self.sp.artist_top_tracks(seed_artist_id)["tracks"]
-                filtered = [t for t in results if t["id"] not in past_ids]
-                if filtered:
-                    return [{
-                        "track_name": t["name"],
-                        "artist": t["artists"][0]["name"],
-                        "album": t["album"]["name"],
-                        "popularity": t.get("popularity", 0),
-                        "spotify_id": t["id"]
-                    } for t in filtered[:limit]]
-        except Exception:
-            pass
-
-        # FALLBACK FINAL: Historial aleatorio (para que no sea siempre el mismo)
-        try:
-            import pandas as pd
-            import numpy as np
-            DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "processed", "user_tracks.csv")
-            if os.path.exists(DATA_PATH):
-                df = pd.read_csv(DATA_PATH)
-                if not df.empty:
-                    # Devolver una muestra aleatoria en lugar de los últimos 10 siempre
-                    sample = df.sample(min(limit, len(df))).replace({np.nan: None})
-                    return sample.to_dict(orient="records")
-        except Exception:
-            pass
-            
-        return []
-
-    def _fetch_recs(self, limit, seed_tracks=None, seed_artists=None, market=None, **kwargs):
-        if not self.sp: return []
-        # Importante: spotipy usa 'country' para el market en recommendations
-        results = self.sp.recommendations(seed_tracks=seed_tracks, seed_artists=seed_artists, limit=limit, country=market, **kwargs)
         return [{
             "track_name": t["name"],
             "artist": t["artists"][0]["name"],
@@ -365,40 +190,3 @@ class SpotifyService:
             "popularity": t.get("popularity", 0),
             "spotify_id": t["id"]
         } for t in results["tracks"]]
-
-    def get_recommendations_from_spotify(self, seed_track_ids, limit=10):
-        if not seed_track_ids:
-            return []
-            
-        # Ensure seed_track_ids are cleaned (no Nones, no empty strings)
-        seeds = [str(tid) for tid in seed_track_ids if tid and str(tid) != "0"][:5]
-        
-        if not seeds:
-            return []
-
-        try:
-            results = self.sp.recommendations(seed_tracks=seeds, limit=limit)
-            recs = []
-            for track in results["tracks"]:
-                recs.append({
-                    "track_name": track["name"],
-                    "artist": track["artists"][0]["name"],
-                    "album": track["album"]["name"],
-                    "popularity": track.get("popularity", 0),
-                    "spotify_id": track["id"]
-                })
-            return recs
-        except Exception as e:
-            print(f"Error fetching recommendations from Spotify (Fallback 1 failed): {e}")
-            # Fallback 2: If everything fails, just return some random top tracks
-            try:
-                top = self.sp.current_user_top_tracks(limit=limit)["items"]
-                return [{
-                    "track_name": t["name"],
-                    "artist": t["artists"][0]["name"],
-                    "album": t["album"]["name"],
-                    "popularity": t.get("popularity", 0),
-                    "spotify_id": t["id"]
-                } for t in top]
-            except Exception:
-                return []
