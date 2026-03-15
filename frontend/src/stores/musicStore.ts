@@ -1,291 +1,344 @@
 import { defineStore } from 'pinia'
 import axios from 'axios'
-
-const API_BASE = 'http://localhost:8000/api'
-const MOCK_MODE = false // Set to false to use real backend
-
 import * as mockData from '../services/mockData'
 
+const API_BASE = 'http://localhost:8000/api'
+const MOCK_MODE = false 
+
+// Typed state for better DX
+interface MusicState {
+  recentTracks: any[]
+  userProfile: any
+  stats: any
+  isSyncing: boolean
+  isSpotifyConnected: boolean
+  lastSyncStatus: any
+  recommendations: any[]
+  searchResults: any[]
+  isLoading: boolean
+  nowPlaying: any
+  queue: any[]
+  currentIndex: number
+  isShuffle: boolean
+  shuffledQueue: any[]
+  loopMode: 'off' | 'all' | 'one'
+  streamUrl: string | null
+  streamMeta: any
+  isLoadingStream: boolean
+  preloadedNext: { trackId: string, data: any } | null
+  isPreloading: boolean
+  streamCache: Map<string, { data: any, timestamp: number }>
+  volume: number
+  playbackRate: number
+  persistedTime: number
+  isReload: boolean
+  shouldAutoResume: boolean
+}
+
 export const useMusicStore = defineStore('music', {
-  state: () => ({
-    recentTracks: [] as any[],
-    userProfile: null as any,
-    stats: null as any,
+  state: (): MusicState => ({
+    recentTracks: [],
+    userProfile: null,
+    stats: null,
     isSyncing: false,
-    lastSyncStatus: null as any,
-    recommendations: [] as any[],
-    searchResults: [] as any[],
+    isSpotifyConnected: false,
+    lastSyncStatus: null,
+    recommendations: [],
+    searchResults: [],
     isLoading: false,
-    nowPlaying: null as any,
-    queue: [] as any[],
+    nowPlaying: null,
+    queue: [],
     currentIndex: -1,
     isShuffle: false,
-    shuffledQueue: [] as any[],
-    loopMode: 'off' as 'off' | 'all' | 'one',
-    streamUrl: null as string | null,
-    streamMeta: null as any,
+    shuffledQueue: [],
+    loopMode: 'off',
+    streamUrl: null,
+    streamMeta: null,
     isLoadingStream: false,
+    preloadedNext: null,
+    isPreloading: false,
+    streamCache: new Map(),
+    volume: Number(localStorage.getItem('m-volume')) || 0.7,
+    playbackRate: Number(localStorage.getItem('m-speed')) || 1,
+    persistedTime: 0,
+    isReload: (performance.getEntriesByType('navigation')[0] as any)?.type === 'reload',
+    shouldAutoResume: false,
   }),
 
   getters: {
-    hasData: (state) => !!(state.userProfile && state.stats && state.recentTracks.length > 0),
-    currentQueue: (state) => state.isShuffle ? state.shuffledQueue : state.queue
+    hasData: (state) => !!(state.userProfile && state.stats),
+    currentQueue: (state) => state.isShuffle ? state.shuffledQueue : state.queue,
+    activeTrack: (state) => state.nowPlaying
   },
 
   actions: {
+    // Utility for API calls with mock support
+    async _apiCall(endpoint: string, params = {}, mock?: any) {
+      if (MOCK_MODE && mock !== undefined) return mock
+      try {
+        const { data } = await axios.get(`${API_BASE}${endpoint}`, { params })
+        return data
+      } catch (err) {
+        console.error(`API Error [${endpoint}]:`, err)
+        return null
+      }
+    },
 
     async syncAccount() {
       this.isSyncing = true
       try {
-        if (MOCK_MODE) {
-          await new Promise(resolve => setTimeout(resolve, 1000))
-          this.lastSyncStatus = mockData.MOCK_SYNC_STATUS
+        const data = await this._apiCall('/sync')
+        if (data && data.status !== 'error') {
+          this.lastSyncStatus = data
           await this.fetchAllData()
-          return mockData.MOCK_SYNC_STATUS
+          return true
         }
-        const { data } = await axios.get(`${API_BASE}/sync`)
-        this.lastSyncStatus = data
-        await this.fetchAllData()
-        return data
-      } catch (error) {
-        console.error('Sync failed', error)
+        return false
       } finally {
         this.isSyncing = false
       }
     },
 
     async fetchAllData() {
-      await Promise.all([
-        this.fetchProfile(),
-        this.fetchStats(),
-        this.fetchRecommendations('discovery'),
-        this.fetchRecentTracks()
+      const [u, s, r, h, st] = await Promise.all([
+        this._apiCall('/user-profile', {}, mockData.MOCK_USER_PROFILE),
+        this._apiCall('/stats', {}, mockData.MOCK_STATS),
+        this._apiCall('/recommendations', { mode: 'discovery', limit: 20 }, mockData.MOCK_TRACKS.slice(0, 10)),
+        this._apiCall('/history', {}, mockData.MOCK_TRACKS),
+        this._apiCall('/status')
       ])
+      if (u) this.userProfile = u
+      if (s) this.stats = s
+      if (r) this.recommendations = r
+      if (h) this.recentTracks = h
+      if (st) this.isSpotifyConnected = st.connected
     },
 
-    async fetchProfile() {
-      try {
-        if (MOCK_MODE) {
-          this.userProfile = mockData.MOCK_USER_PROFILE
-          return
-        }
-        const { data } = await axios.get(`${API_BASE}/user-profile`)
-        this.userProfile = data
-      } catch (error) {
-        console.error('Profile fetch failed', error)
+    // Persistence
+    savePlaybackState(isPlaying: boolean = false) {
+      const state = {
+        nowPlaying: this.nowPlaying,
+        queue: this.queue,
+        currentIndex: this.currentIndex,
+        isShuffle: this.isShuffle,
+        shuffledQueue: this.shuffledQueue,
+        loopMode: this.loopMode,
+        wasPlaying: isPlaying
       }
+      localStorage.setItem('m-playback-state', JSON.stringify(state))
     },
 
-    async fetchStats() {
+    getState(): boolean {
+      const saved = localStorage.getItem('m-playback-state')
+      if (!saved) return false
       try {
-        if (MOCK_MODE) {
-          this.stats = mockData.MOCK_STATS
-          return
-        }
-        const { data } = await axios.get(`${API_BASE}/stats`)
-        this.stats = data
-      } catch (error) {
-        console.error('Stats fetch failed', error)
-      }
+        return JSON.parse(saved).wasPlaying || false
+      } catch { return false }
     },
 
-    async fetchRecentTracks() {
+    loadPlaybackState() {
+      const saved = localStorage.getItem('m-playback-state')
+      if (!saved) return
       try {
-        if (MOCK_MODE) {
-          this.recentTracks = mockData.MOCK_TRACKS
-          return
-        }
-        const { data } = await axios.get(`${API_BASE}/history`)
-        this.recentTracks = data
-      } catch (error) {
-        console.error('History fetch failed', error)
-      }
-    },
-
-    async fetchRecommendations(mode = 'vibe') {
-      try {
-        if (MOCK_MODE) {
-          this.recommendations = mockData.MOCK_TRACKS.slice(0, 2)
-          return
-        }
-        const { data } = await axios.get(`${API_BASE}/recommendations`, {
-          params: { mode, limit: 20 }
+        const p = JSON.parse(saved)
+        Object.assign(this, {
+          nowPlaying: p.nowPlaying,
+          queue: p.queue || [],
+          currentIndex: p.currentIndex ?? -1,
+          isShuffle: !!p.isShuffle,
+          shuffledQueue: p.shuffledQueue || [],
+          loopMode: p.loopMode || 'off'
         })
-        this.recommendations = data
-      } catch (error) {
-        console.error('Recommendations failed', error)
+        
+        // Auto-resume if it was a reload and was playing
+        if (this.isReload && p.wasPlaying) {
+          this.shouldAutoResume = true
+        }
+
+        if (this.nowPlaying && !this.streamUrl) {
+          const t = this.nowPlaying
+          this.streamTrack(t.track_name, t.artist, t.spotify_id || t.id)
+        }
+      } catch (e) {
+        console.warn('Restore session failed', e)
       }
+    },
+
+    updateVolume(v: number) {
+      this.volume = v
+      localStorage.setItem('m-volume', v.toString())
+    },
+
+    updatePlaybackRate(r: number) {
+      this.playbackRate = r
+      localStorage.setItem('m-speed', r.toString())
+    },
+
+    updatePersistedTime(t: number) {
+      this.persistedTime = t
+      // Debounced or threshold-based save could be done here, 
+      // but for simple app, direct save is okay.
+      localStorage.setItem('m-time', t.toString())
     },
 
     async search(query: string) {
       if (!query) return
       this.isLoading = true
-      try {
-        if (MOCK_MODE) {
-          await new Promise(resolve => setTimeout(resolve, 500))
-          this.searchResults = [mockData.MOCK_TRACKS[0]]
-          return
-        }
-        const { data } = await axios.get(`${API_BASE}/search`, {
-          params: { query }
-        })
-        this.searchResults = data
-      } catch (error) {
-        console.error('Search failed', error)
-      } finally {
-        this.isLoading = false
-      }
+      const data = await this._apiCall('/search', { query }, [mockData.MOCK_TRACKS[0]])
+      if (data) this.searchResults = data
+      this.isLoading = false
     },
 
+    // Playback control
     setNowPlaying(track: any, contextQueue?: any[]) {
       this.nowPlaying = track
-      
       if (contextQueue) {
-        this.queue = contextQueue
-        // Matching by ID is preferred, but fallback to name+artist for safety
+        this.queue = [...contextQueue]
         this.currentIndex = contextQueue.findIndex(t => 
-          (t.spotify_id && track.spotify_id && t.spotify_id === track.spotify_id) || 
-          (t.id && track.id && t.id === track.id) ||
+          (t.spotify_id && t.spotify_id === track.spotify_id) || 
+          (t.id && t.id === track.id) || 
           (t.track_name === track.track_name && t.artist === track.artist)
         )
-        if (this.isShuffle) {
-          this.shuffleQueue()
-        }
+        if (this.isShuffle) this.shuffleQueue()
       }
-
-      // Auto-stream when a track is selected (only in live mode)
       if (!MOCK_MODE && track?.track_name) {
-        this.streamTrack(track.track_name, track.artist || '')
+        this.streamTrack(track.track_name, track.artist || '', track.spotify_id || track.id)
       }
+      this.savePlaybackState()
     },
 
     addToQueue(track: any) {
       this.queue.push(track)
-      if (this.isShuffle) {
-        this.shuffledQueue.push(track)
-      }
-      if (this.currentIndex === -1) {
-        this.setNowPlaying(track)
-      }
+      if (this.isShuffle) this.shuffledQueue.push(track)
+      if (this.currentIndex === -1) this.setNowPlaying(track)
+      this.savePlaybackState(this.getState())
     },
 
     insertNext(track: any) {
-      if (this.currentIndex === -1) {
-        this.setNowPlaying(track)
-        return
-      }
-      
-      const insertPos = this.currentIndex + 1
-      this.queue.splice(insertPos, 0, track)
-      if (this.isShuffle) {
-        this.shuffledQueue.splice(insertPos, 0, track)
-      }
-    },
-
-    removeFromQueue(index: number) {
-      this.queue.splice(index, 1)
-      if (this.isShuffle) {
-        this.shuffledQueue.splice(index, 1) // Note: This might not be perfectly mapped
-      }
-      if (index < this.currentIndex) {
-        this.currentIndex--
-      } else if (index === this.currentIndex) {
-        this.playNext()
-      }
+      if (this.currentIndex === -1) return this.setNowPlaying(track)
+      const pos = this.currentIndex + 1
+      this.queue.splice(pos, 0, track)
+      if (this.isShuffle) this.shuffledQueue.splice(pos, 0, track)
+      this.savePlaybackState(this.getState())
     },
 
     playNext() {
       const q = this.currentQueue
-      if (q.length === 0) return
-
-      let nextIndex = this.currentIndex + 1
-      if (nextIndex >= q.length) {
-        if (this.loopMode === 'all') {
-          nextIndex = 0
-        } else {
-          return // End of queue
-        }
+      if (!q.length) return
+      let next = this.currentIndex + 1
+      if (next >= q.length) {
+        if (this.loopMode === 'all') next = 0
+        else return
       }
-      
-      this.currentIndex = nextIndex
-      const nextTrack = q[nextIndex]
-      this.nowPlaying = nextTrack
-      this.streamTrack(nextTrack.track_name, nextTrack.artist || '')
+      this._changeTrack(next)
     },
 
     playPrevious() {
       const q = this.currentQueue
-      if (q.length === 0) return
-
-      let prevIndex = this.currentIndex - 1
-      if (prevIndex < 0) {
-        if (this.loopMode === 'all') {
-          prevIndex = q.length - 1
-        } else {
-          prevIndex = 0 // Stay at first track
-        }
+      if (!q.length) return
+      let prev = this.currentIndex - 1
+      if (prev < 0) {
+        if (this.loopMode === 'all') prev = q.length - 1
+        else prev = 0
       }
+      this._changeTrack(prev)
+    },
 
-      this.currentIndex = prevIndex
-      const prevTrack = q[prevIndex]
-      this.nowPlaying = prevTrack
-      this.streamTrack(prevTrack.track_name, prevTrack.artist || '')
+    _changeTrack(index: number) {
+      this.currentIndex = index
+      const t = this.currentQueue[index]
+      this.nowPlaying = t
+      this.streamTrack(t.track_name, t.artist || '', t.spotify_id || t.id)
+      this.savePlaybackState(true) // We are definitely switching to play
     },
 
     toggleShuffle() {
       this.isShuffle = !this.isShuffle
-      if (this.isShuffle) {
-        this.shuffleQueue()
+      if (this.isShuffle) this.shuffleQueue()
+      else {
+        const t = this.nowPlaying
+        this.currentIndex = this.queue.findIndex(it => it.spotify_id === t?.spotify_id)
       }
+      this.savePlaybackState(this.getState())
     },
 
     shuffleQueue() {
-      const newShuffle = [...this.queue]
-      // Keep current track at index 0 or find it
-      const currentTrack = this.nowPlaying
-      const filtered = newShuffle.filter(t => t.spotify_id !== currentTrack?.spotify_id)
-      
+      const arr = [...this.queue]
+      const cur = this.nowPlaying
+      const filtered = arr.filter(t => t.spotify_id !== cur?.spotify_id)
+      // Fisher-Yates
       for (let i = filtered.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
-        [filtered[i], filtered[j]] = [filtered[j], filtered[i]];
+        [filtered[i], filtered[j]] = [filtered[j], filtered[i]]
       }
-      
-      if (currentTrack) {
-        this.shuffledQueue = [currentTrack, ...filtered]
-        this.currentIndex = 0
-      } else {
-        this.shuffledQueue = filtered
-        this.currentIndex = 0
-      }
+      this.shuffledQueue = cur ? [cur, ...filtered] : filtered
+      this.currentIndex = 0
     },
 
     toggleLoop() {
-      const modes: ('off' | 'all' | 'one')[] = ['off', 'all', 'one']
-      const currentIdx = modes.indexOf(this.loopMode)
-      this.loopMode = modes[(currentIdx + 1) % modes.length]
+      const m: any[] = ['off', 'all', 'one']
+      this.loopMode = m[(m.indexOf(this.loopMode) + 1) % 3]
+      this.savePlaybackState(this.getState())
     },
 
-    async streamTrack(trackName: string, artist: string) {
+    async streamTrack(name: string, artist: string, id?: string) {
+      const trackId = id || name
       this.isLoadingStream = true
+      
+      // 1. Preload hit?
+      if (this.preloadedNext && this.preloadedNext.trackId === trackId) {
+        this.streamUrl = this.preloadedNext.data.stream_url
+        this.streamMeta = this.preloadedNext.data
+        this.isLoadingStream = false
+        this.preloadedNext = null
+        this.preloadNext()
+        return
+      }
+
+      // 2. Local session cache hit (30 min validity)
+      const cached = this.streamCache.get(trackId)
+      if (cached && (Date.now() - cached.timestamp < 30 * 60 * 1000)) {
+        this.streamUrl = cached.data.stream_url
+        this.streamMeta = cached.data
+        this.isLoadingStream = false
+        this.preloadNext()
+        return
+      }
+
+      // 3. Remote fetch with race-condition protection
       this.streamUrl = null
-      this.streamMeta = null
-      try {
-        const { data } = await axios.get(`${API_BASE}/stream`, {
-          params: { track: trackName, artist },
-          timeout: 15000 // 15s timeout
-        })
+      const currentTrackAtStart = this.nowPlaying?.spotify_id || this.nowPlaying?.id || this.nowPlaying?.track_name
+      
+      const data = await this._apiCall('/stream', { track: name, artist, spotify_id: id })
+      
+      // Only update if we haven't switched to another track during the wait
+      const currentTrackNow = this.nowPlaying?.spotify_id || this.nowPlaying?.id || this.nowPlaying?.track_name
+      if (data && currentTrackAtStart === currentTrackNow) {
         this.streamUrl = data.stream_url
         this.streamMeta = data
-      } catch (error) {
-        console.error('Stream failed', error)
-        this.streamUrl = null
-      } finally {
-        this.isLoadingStream = false
+        this.streamCache.set(trackId, { data, timestamp: Date.now() })
+        this.preloadNext()
       }
+      this.isLoadingStream = false
     },
 
-    clearSearch() {
-        this.searchResults = []
+    async preloadNext() {
+      const q = this.currentQueue
+      if (!q.length || this.currentIndex === -1 || this.isPreloading) return
+      
+      const nextIdx = (this.currentIndex + 1) % q.length
+      if (nextIdx === 0 && this.loopMode === 'off') return
+
+      const t = q[nextIdx]
+      const tid = t.spotify_id || t.id || t.track_name
+      if (this.preloadedNext?.trackId === tid) return
+
+      this.isPreloading = true
+      const data = await this._apiCall('/stream', { 
+        track: t.track_name, artist: t.artist || '', spotify_id: t.spotify_id || t.id 
+      })
+      if (data) this.preloadedNext = { trackId: tid, data }
+      this.isPreloading = false
     }
   }
 })

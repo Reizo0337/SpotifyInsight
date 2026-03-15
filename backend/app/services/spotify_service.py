@@ -23,6 +23,12 @@ class SpotifyService:
         try:
             # We try to get the client but we NEVER make a network call here
             self.sp = get_spotify_client()
+            if self.sp:
+                # Fetch user profile immediately
+                user = self._call_api("me")
+                if user:
+                    self.user_name = user.get("display_name", "Spotify User")
+                    self.user_id = user.get("id", "local_user")
         except Exception as e:
             Logger.warning("SPOTIFY", f"Auth client failed: {e}")
             self.sp = None
@@ -30,6 +36,9 @@ class SpotifyService:
     def is_connected(self):
         # We consider it "connected" only if we have a client AND we aren't in cooldown
         return self.sp is not None and "ALL" not in self._forbidden_endpoints
+
+    def get_user_profile(self):
+        return {"user_name": self.user_name, "user_id": self.user_id}
 
     def _call_api(self, method_name, *args, **kwargs):
         """Wrapper for API calls with circuit breaker."""
@@ -135,11 +144,15 @@ class SpotifyService:
 
     def _map_track(self, track, features, artist_genres):
         main_artist = track["artists"][0] if track.get("artists") else {}
+        album = track.get("album", {})
+        images = album.get("images", [])
         return {
             "track_name": track.get("name", "Unknown"),
             "artist": main_artist.get("name", "Unknown"),
             "artist_id": main_artist.get("id"),
-            "album": track.get("album", {}).get("name", "Unknown"),
+            "album": album.get("name", "Unknown"),
+            "thumbnail": images[0]["url"] if images else None,
+            "duration_ms": track.get("duration_ms", 0),
             "popularity": track.get("popularity", 0),
             "genre": artist_genres.get(main_artist.get("id"), "Unknown"),
             "danceability": features.get("danceability", 0),
@@ -190,6 +203,8 @@ class SpotifyService:
             "track_name": t["name"],
             "artist": t["artists"][0]["name"],
             "album": t["album"]["name"],
+            "thumbnail": t["album"]["images"][0]["url"] if t["album"].get("images") else None,
+            "duration_ms": t.get("duration_ms", 0),
             "popularity": t.get("popularity", 0),
             "spotify_id": t["id"]
         } for t in results["tracks"]]

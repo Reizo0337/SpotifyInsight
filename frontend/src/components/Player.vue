@@ -4,34 +4,35 @@ import {
   Repeat, Shuffle, Volume2, VolumeX,
   ListMusic, MonitorSpeaker, Loader2
 } from 'lucide-vue-next'
-import { ref, watch, computed, onUnmounted } from 'vue'
+import { ref, watch, computed, onUnmounted, onMounted } from 'vue'
 import { useMusicStore } from '../stores/musicStore'
 
 const musicStore = useMusicStore()
 const audioRef = ref<HTMLAudioElement | null>(null)
 
+// UI State
 const isPlaying = ref(false)
-const progress = ref(0)
+const displayProgress = ref(0) // Local state for smooth dragging
 const currentTime = ref(0)
 const duration = ref(0)
-const volume = ref(0.7)
+const volume = ref(musicStore.volume)
 const isMuted = ref(false)
-const playbackRate = ref(1)
-
+const playbackRate = ref(musicStore.playbackRate)
+const hasResumed = ref(false)
 const isDraggingProgress = ref(false)
 const isDraggingVolume = ref(false)
 const isQueueVisible = ref(false)
 
+// Store Mappings
 const streamLoading = computed(() => musicStore.isLoadingStream)
 const streamUrl = computed(() => musicStore.streamUrl)
 const streamMeta = computed(() => musicStore.streamMeta)
-const nowPlaying = computed(() => musicStore.nowPlaying)
+const nowPlaying = computed(() => musicStore.activeTrack)
 const loopMode = computed(() => musicStore.loopMode)
 const isShuffle = computed(() => musicStore.isShuffle)
 const currentQueue = computed(() => musicStore.currentQueue)
 const currentIndex = computed(() => musicStore.currentIndex)
 
-// Format seconds to m:ss
 const formatTime = (secs: number) => {
   if (!secs || isNaN(secs)) return '0:00'
   const m = Math.floor(secs / 60)
@@ -39,68 +40,94 @@ const formatTime = (secs: number) => {
   return `${m}:${s}`
 }
 
-// Watch for stream URL changes — auto-play when ready
+// Watchers
 watch(streamUrl, (url) => {
   if (url && audioRef.value) {
     audioRef.value.src = url
-    audioRef.value.volume = volume.value
+    audioRef.value.volume = isMuted.value ? 0 : volume.value
     audioRef.value.playbackRate = playbackRate.value
+    hasResumed.value = false
+    
+    // Regular play (not reload)
+    if (!musicStore.shouldAutoResume) {
+      audioRef.value.play().then(() => { isPlaying.value = true }).catch(() => {})
+    }
+  }
+})
+
+// Trigger auto-resume from reload
+watch(() => musicStore.shouldAutoResume, (val) => {
+  if (val && audioRef.value && audioRef.value.src) {
     audioRef.value.play()
-      .then(() => { isPlaying.value = true })
-      .catch(err => console.error('Auto-play blocked:', err))
+      .then(() => { 
+        isPlaying.value = true
+        musicStore.shouldAutoResume = false 
+      })
+      .catch(err => {
+        console.warn('Auto-play blocked by browser. User interaction required.', err)
+        musicStore.shouldAutoResume = false
+      })
   }
+}, { immediate: true })
+
+watch(isPlaying, (val) => {
+  musicStore.savePlaybackState(val)
 })
 
-// Watch for speed changes
 watch(playbackRate, (rate) => {
-  if (audioRef.value) {
-    audioRef.value.playbackRate = rate
-  }
+  if (audioRef.value) audioRef.value.playbackRate = rate
+  musicStore.updatePlaybackRate(rate)
 })
 
-// Watch for metadata changes to update duration
 watch(streamMeta, (meta) => {
-  if (meta?.duration) {
-    duration.value = meta.duration
-  }
+  if (meta?.duration) duration.value = meta.duration
 })
 
+// Handlers
 const togglePlay = () => {
-  const audio = audioRef.value
-  if (!audio) return
-  if (!audio.src && streamUrl.value) audio.src = streamUrl.value
-
+  const a = audioRef.value
+  if (!a || !a.src) return
   if (isPlaying.value) {
-    audio.pause()
+    a.pause()
     isPlaying.value = false
-  } else if (audio.src) {
-    audio.play().then(() => { isPlaying.value = true }).catch(console.error)
+  } else {
+    a.play().then(() => { isPlaying.value = true }).catch(console.error)
   }
 }
 
 const onTimeUpdate = () => {
-  const audio = audioRef.value
-  if (!audio || isDraggingProgress.value) return
-  currentTime.value = audio.currentTime
-  // Use metadata duration as primary, fallback to element duration if ready
-  if (audio.duration && !isNaN(audio.duration) && audio.duration !== Infinity) {
-    duration.value = audio.duration
+  const a = audioRef.value
+  if (!a || isDraggingProgress.value) return
+  
+  currentTime.value = a.currentTime
+  if (a.duration && !isNaN(a.duration) && a.duration !== Infinity) {
+    duration.value = a.duration
   }
-  progress.value = duration.value ? (audio.currentTime / duration.value) * 100 : 0
+  displayProgress.value = duration.value ? (a.currentTime / duration.value) * 100 : 0
+  
+  if (isPlaying.value) musicStore.updatePersistedTime(a.currentTime)
+}
+
+const onCanPlay = () => {
+  if (!hasResumed.value && audioRef.value) {
+    const saved = Number(localStorage.getItem('m-time'))
+    if (saved > 0 && saved < (audioRef.value.duration || Infinity)) {
+      audioRef.value.currentTime = saved
+    }
+    hasResumed.value = true
+  }
 }
 
 const onEnded = () => {
-  isPlaying.value = false
   if (loopMode.value === 'one' && audioRef.value) {
     audioRef.value.currentTime = 0
     audioRef.value.play()
-    isPlaying.value = true
   } else {
     musicStore.playNext()
   }
 }
 
-// DRAGGING LOGIC
+// Interaction logic
 const startSeek = (e: MouseEvent) => {
   isDraggingProgress.value = true
   updateSeek(e)
@@ -113,46 +140,40 @@ const updateSeek = (e: MouseEvent) => {
   if (!bar || !duration.value) return
   const rect = bar.getBoundingClientRect()
   const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-  progress.value = pct * 100
+  displayProgress.value = pct * 100
   currentTime.value = pct * duration.value
-  if (!isDraggingProgress.value && audioRef.value) {
-    audioRef.value.currentTime = currentTime.value
-  }
 }
 
-const stopSeek = (e: MouseEvent) => {
-  if (audioRef.value) {
-    const bar = document.querySelector('.progress-container') as HTMLElement
-    const rect = bar.getBoundingClientRect()
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-    audioRef.value.currentTime = pct * audioRef.value.duration
+const stopSeek = () => {
+  if (audioRef.value && duration.value) {
+    audioRef.value.currentTime = (displayProgress.value / 100) * duration.value
   }
   isDraggingProgress.value = false
   window.removeEventListener('mousemove', updateSeek)
   window.removeEventListener('mouseup', stopSeek)
 }
 
-const startVolumeDrag = (e: MouseEvent) => {
+const startVol = (e: MouseEvent) => {
   isDraggingVolume.value = true
-  updateVolume(e)
-  window.addEventListener('mousemove', updateVolume)
-  window.addEventListener('mouseup', stopVolumeDrag)
+  updateVol(e)
+  window.addEventListener('mousemove', updateVol)
+  window.addEventListener('mouseup', stopVol)
 }
 
-const updateVolume = (e: MouseEvent) => {
+const updateVol = (e: MouseEvent) => {
   const bar = document.querySelector('.volume-slider') as HTMLElement
   if (!bar) return
   const rect = bar.getBoundingClientRect()
   const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
   volume.value = pct
   if (audioRef.value) audioRef.value.volume = pct
-  isMuted.value = pct === 0
+  musicStore.updateVolume(pct)
 }
 
-const stopVolumeDrag = () => {
+const stopVol = () => {
   isDraggingVolume.value = false
-  window.removeEventListener('mousemove', updateVolume)
-  window.removeEventListener('mouseup', stopVolumeDrag)
+  window.removeEventListener('mousemove', updateVol)
+  window.removeEventListener('mouseup', stopVol)
 }
 
 const toggleMute = () => {
@@ -160,118 +181,94 @@ const toggleMute = () => {
   if (audioRef.value) audioRef.value.muted = isMuted.value
 }
 
-const togglePlaybackRate = () => {
-  const rates = [0.5, 0.75, 1, 1.25, 1.5, 2]
-  const currentIndex = rates.indexOf(playbackRate.value)
-  playbackRate.value = rates[(currentIndex + 1) % rates.length]
+const cycleRate = () => {
+  const rates = [0.5, 1, 1.25, 1.5, 2]
+  playbackRate.value = rates[(rates.indexOf(playbackRate.value) + 1) % rates.length]
 }
 
-const toggleQueue = () => {
-  isQueueVisible.value = !isQueueVisible.value
+const onUnload = () => {
+  musicStore.savePlaybackState(isPlaying.value)
 }
 
-const playFromQueue = (index: number) => {
-    musicStore.currentIndex = index
-    const track = musicStore.currentQueue[index]
-    musicStore.nowPlaying = track
-    musicStore.streamTrack(track.track_name, track.artist || '')
-}
+onMounted(() => {
+  if (musicStore.nowPlaying) musicStore.loadPlaybackState()
+  window.addEventListener('beforeunload', onUnload)
+})
 
 onUnmounted(() => {
-  audioRef.value?.pause()
   window.removeEventListener('mousemove', updateSeek)
   window.removeEventListener('mouseup', stopSeek)
-  window.removeEventListener('mousemove', updateVolume)
-  window.removeEventListener('mouseup', stopVolumeDrag)
+  window.removeEventListener('mousemove', updateVol)
+  window.removeEventListener('mouseup', stopVol)
+  window.removeEventListener('beforeunload', onUnload)
 })
+
 </script>
 
 <template>
   <footer class="player-2026">
-    <!-- Hidden native audio element -->
     <audio 
       ref="audioRef" 
       @timeupdate="onTimeUpdate" 
       @ended="onEnded"
+      @canplay="onCanPlay"
       @loadedmetadata="onTimeUpdate"
       crossorigin="anonymous"
     />
 
     <div class="player-wrapper">
-      <!-- Top progress bar glow -->
       <div class="mini-progress-top">
-        <div class="mini-fill" :style="{ width: progress + '%' }"></div>
+        <div class="mini-fill" :style="{ width: displayProgress + '%' }"></div>
       </div>
 
-      <!-- Track Info -->
       <div class="track-info">
         <div class="album-art" :class="{ 'playing': isPlaying, 'loading': streamLoading }">
-          <img 
-            :src="nowPlaying?.thumbnail || `https://api.dicebear.com/7.x/identicon/svg?seed=${nowPlaying?.track_name || 'music'}`" 
-            alt="Art"
-          >
+          <img :src="nowPlaying?.thumbnail || `https://api.dicebear.com/7.x/identicon/svg?seed=${nowPlaying?.track_name}`" alt="">
           <div class="art-glow"></div>
-          <div v-if="streamLoading" class="art-loading">
-            <Loader2 :size="20" class="spin" />
-          </div>
+          <div v-if="streamLoading" class="art-loading"><Loader2 :size="20" class="spin" /></div>
         </div>
         <div class="track-details">
-          <span class="title">{{ nowPlaying?.track_name || 'Selecciona una canción' }}</span>
-          <span class="artist">{{ nowPlaying?.artist || 'Insights Engine' }}</span>
+          <span class="title">{{ nowPlaying?.track_name || 'Sin reproducción' }}</span>
+          <span class="artist">{{ nowPlaying?.artist || 'Inicia una canción' }}</span>
         </div>
       </div>
 
-      <!-- Center Controls -->
       <div class="controls-section">
         <div class="main-buttons">
-          <button class="btn-icon secondary" :class="{ active: isShuffle }" @click="musicStore.toggleShuffle">
-            <Shuffle :size="18" />
-          </button>
-          <button class="btn-icon secondary" @click="musicStore.playPrevious">
-            <SkipBack :size="20" fill="currentColor" />
-          </button>
+          <button class="btn-icon secondary" :class="{ active: isShuffle }" @click="musicStore.toggleShuffle"><Shuffle :size="18" /></button>
+          <button class="btn-icon secondary" @click="musicStore.playPrevious"><SkipBack :size="20" fill="currentColor" /></button>
           <button @click="togglePlay" class="play-btn" :disabled="streamLoading && !streamUrl">
             <Loader2 v-if="streamLoading && !isPlaying" :size="22" class="spin" />
             <component v-else :is="isPlaying ? Pause : Play" :size="22" fill="black" />
           </button>
-          <button class="btn-icon secondary" @click="musicStore.playNext">
-            <SkipForward :size="20" fill="currentColor" />
-          </button>
-          <button class="btn-icon secondary" :class="{ active: loopMode !== 'off' }" @click="musicStore.toggleLoop" style="position: relative;">
+          <button class="btn-icon secondary" @click="musicStore.playNext"><SkipForward :size="20" fill="currentColor" /></button>
+          <button class="btn-icon secondary" :class="{ active: loopMode !== 'off' }" @click="musicStore.toggleLoop">
             <Repeat :size="18" />
             <span v-if="loopMode === 'one'" class="loop-one-indicator">1</span>
           </button>
         </div>
 
-        <!-- Playback Bar -->
         <div class="playback-bar">
           <span class="time">{{ formatTime(currentTime) }}</span>
           <div class="progress-container" @mousedown="startSeek">
             <div class="progress-bg">
-              <div class="progress-fill" :style="{ width: progress + '%' }">
-                <div class="progress-knob"></div>
-              </div>
+              <div class="progress-fill" :style="{ width: displayProgress + '%' }"><div class="progress-knob"></div></div>
             </div>
           </div>
-          <span class="time">{{ formatTime(duration - currentTime) }}</span>
+          <span class="time">{{ formatTime(duration) }}</span>
         </div>
       </div>
 
-      <!-- Extra Controls -->
       <div class="extra-controls">
-        <button class="btn-icon speed-btn" @click="togglePlaybackRate" title="Velocidad">
-          {{ playbackRate }}x
-        </button>
-        <button class="btn-icon" @click="toggleQueue" :class="{ active: isQueueVisible }">
-          <ListMusic :size="18" />
-        </button>
+        <button class="btn-icon speed-btn" @click="cycleRate">{{ playbackRate }}x</button>
+        <button class="btn-icon" @click="isQueueVisible = !isQueueVisible" :class="{ active: isQueueVisible }"><ListMusic :size="18" /></button>
         <button class="btn-icon"><MonitorSpeaker :size="18" /></button>
         <div class="volume-group">
           <button class="btn-icon" @click="toggleMute">
             <VolumeX v-if="isMuted || volume === 0" :size="18" />
             <Volume2 v-else :size="18" />
           </button>
-          <div class="volume-slider" @mousedown="startVolumeDrag">
+          <div class="volume-slider" @mousedown="startVol">
             <div class="volume-fill" :style="{ width: (isMuted ? 0 : volume * 100) + '%' }"></div>
           </div>
         </div>
@@ -282,33 +279,19 @@ onUnmounted(() => {
     <Transition name="slide-up">
       <div v-if="isQueueVisible" class="queue-overlay">
         <div class="queue-header">
-          <h3>Cola de Reproducción</h3>
-          <button class="close-btn" @click="toggleQueue">×</button>
+          <h3>Siguiente en la cola</h3>
+          <button @click="isQueueVisible = false">×</button>
         </div>
         <div class="queue-list custom-scrollbar">
-          <div 
-            v-for="(track, index) in currentQueue" 
-            :key="track.spotify_id + index"
-            class="queue-item"
-            :class="{ 'current': index === currentIndex }"
-            @click="playFromQueue(index)"
-          >
+          <div v-for="(t, i) in currentQueue" :key="i" class="queue-item" :class="{ current: i === currentIndex }" @click="musicStore._changeTrack(i)">
             <div class="q-thumb">
-              <img :src="track.thumbnail || `https://api.dicebear.com/7.x/shapes/svg?seed=${track.track_name}`" alt="">
-              <div v-if="index === currentIndex" class="playing-overlay">
-                <Loader2 v-if="isPlaying" :size="14" class="spin" />
-              </div>
+              <img :src="t.thumbnail || `https://api.dicebear.com/7.x/shapes/svg?seed=${t.track_name}`" alt="">
+              <div v-if="i === currentIndex && isPlaying" class="playing-overlay"><Loader2 :size="14" class="spin" /></div>
             </div>
             <div class="q-info">
-              <span class="q-name">{{ track.track_name }}</span>
-              <span class="q-artist">{{ track.artist }}</span>
+              <span class="q-name">{{ t.track_name }}</span>
+              <span class="q-artist">{{ t.artist }}</span>
             </div>
-            <div class="q-actions">
-                <button class="q-remove" @click.stop="musicStore.removeFromQueue(index)">×</button>
-            </div>
-          </div>
-          <div v-if="currentQueue.length === 0" class="empty-queue">
-            No hay canciones en la cola
           </div>
         </div>
       </div>
@@ -317,440 +300,77 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.player-2026 {
-  grid-area: player;
-  padding: 8px 0 16px 0;
-  z-index: 100;
-}
-
+.player-2026 { grid-area: player; padding-bottom: 16px; position: relative; }
 .player-wrapper {
-  background: rgba(15, 15, 15, 0.6);
-  backdrop-filter: blur(40px) saturate(200%);
-  -webkit-backdrop-filter: blur(40px) saturate(200%);
+  background: rgba(18, 18, 18, 0.8);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid rgba(255, 255, 255, 0.1);
   margin: 0 16px;
-  border-radius: 24px;
-  height: 96px;
+  border-radius: 20px;
+  height: 90px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 32px;
-  box-shadow: 0 30px 60px rgba(0,0,0,0.6);
+  padding: 0 24px;
+  box-shadow: 0 20px 40px rgba(0,0,0,0.5);
   position: relative;
   overflow: hidden;
 }
-
-.mini-progress-top {
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  height: 3px;
-  background: rgba(255,255,255,0.05);
-}
-
-.mini-fill {
-  height: 100%;
-  background: var(--spotify-neon);
-  box-shadow: 0 0 15px var(--spotify-neon);
-  transition: width 0.3s linear;
-  border-radius: 2px;
-}
-
-.track-info {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  width: 30%;
-}
-
-.album-art {
-  width: 56px;
-  height: 56px;
-  border-radius: 12px;
-  position: relative;
-  transition: transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
-  flex-shrink: 0;
-}
-
-.album-art.playing {
-  transform: scale(1.05);
-}
-
-.album-art img {
-  width: 100%;
-  height: 100%;
-  border-radius: 12px;
-  object-fit: cover;
-  position: relative;
-  z-index: 2;
-}
-
-.art-glow {
-  position: absolute;
-  top: 50%; left: 50%;
-  transform: translate(-50%, -50%);
-  width: 100%; height: 100%;
-  background: var(--spotify-green);
-  filter: blur(20px);
-  opacity: 0;
-  transition: opacity 0.5s;
-  z-index: 1;
-}
-
-.playing .art-glow {
-  opacity: 0.4;
-}
-
-.art-loading {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0,0,0,0.5);
-  border-radius: 12px;
-  z-index: 3;
-  color: white;
-}
-
-.track-details {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.title {
-  font-size: 0.95rem;
-  font-weight: 700;
-  color: white;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.artist {
-  font-size: 0.8rem;
-  color: var(--spotify-text-grey);
-}
-
-.controls-section {
-  flex: 1;
-  max-width: 600px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
-
-.main-buttons {
-  display: flex;
-  align-items: center;
-  gap: 24px;
-}
-
-.play-btn {
-  width: 42px;
-  height: 42px;
-  background: white;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: black;
-  transition: all 0.2s;
-}
-
-.play-btn:hover:not(:disabled) {
-  transform: scale(1.1);
-  background: var(--spotify-neon);
-}
-
-.play-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.btn-icon {
-  color: var(--spotify-text-grey);
-  padding: 4px;
-  transition: all 0.2s;
-}
-
+.mini-progress-top { position: absolute; top: 0; left: 0; right: 0; height: 2px; background: rgba(255,255,255,0.05); }
+.mini-fill { height: 100%; background: var(--spotify-neon); transition: width 0.2s linear; }
+.track-info { display: flex; align-items: center; gap: 12px; width: 300px; }
+.album-art { width: 52px; height: 52px; border-radius: 8px; position: relative; flex-shrink: 0; }
+.album-art img { width: 100%; height: 100%; border-radius: 8px; object-fit: cover; }
+.art-glow { position: absolute; inset: 0; background: var(--spotify-green); filter: blur(15px); opacity: 0; transition: opacity 0.4s; }
+.playing .art-glow { opacity: 0.3; }
+.art-loading { position: absolute; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; border-radius: 8px; }
+.track-details { display: flex; flex-direction: column; overflow: hidden; }
+.title { font-size: 0.9rem; font-weight: 700; color: white; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.artist { font-size: 0.75rem; color: var(--spotify-text-grey); }
+.controls-section { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.main-buttons { display: flex; align-items: center; gap: 20px; }
+.play-btn { width: 38px; height: 38px; background: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: black; transition: transform 0.2s; }
+.play-btn:hover { transform: scale(1.08); }
+.btn-icon { color: var(--spotify-text-grey); padding: 4px; transition: color 0.2s; }
 .btn-icon:hover { color: white; }
+.btn-icon.active { color: var(--spotify-green); }
+.playback-bar { width: 100%; max-width: 500px; display: flex; align-items: center; gap: 12px; }
+.time { font-size: 0.7rem; color: var(--spotify-text-grey); min-width: 35px; font-variant-numeric: tabular-nums; }
+.progress-container { flex: 1; height: 12px; display: flex; align-items: center; cursor: pointer; }
+.progress-bg { width: 100%; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; position: relative; }
+.progress-fill { height: 100%; background: white; border-radius: 2px; position: relative; }
+.progress-knob { position: absolute; right: -6px; top: 50%; transform: translateY(-50%); width: 12px; height: 12px; background: white; border-radius: 50%; opacity: 0; transition: opacity 0.1s; box-shadow: 0 2px 4px rgba(0,0,0,0.3); }
+.progress-container:hover .progress-knob { opacity: 1; }
+.progress-container:hover .progress-fill { background: var(--spotify-green); }
+.extra-controls { width: 300px; display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
+.volume-group { display: flex; align-items: center; gap: 8px; }
+.volume-slider { width: 80px; height: 12px; position: relative; display: flex; align-items: center; cursor: pointer; }
+.volume-slider::before { content: ''; position: absolute; width: 100%; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; }
+.volume-fill { height: 4px; background: white; border-radius: 2px; min-width: 4px; }
+.volume-group:hover .volume-fill { background: var(--spotify-green); }
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.loop-one-indicator { position: absolute; top: -2px; right: -4px; background: var(--spotify-green); color: black; font-size: 0.6rem; font-weight: 900; width: 12px; height: 12px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+.speed-btn { font-size: 0.7rem; font-weight: 800; background: rgba(255,255,255,0.05); border-radius: 4px; padding: 2px 6px; }
 
-.btn-icon.secondary { opacity: 0.7; }
-.btn-icon.active { color: var(--spotify-green); opacity: 1; }
+/* ─── Queue Variables ──────────────────────────────── */
 
-.playback-bar {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.time {
-  font-size: 0.72rem;
-  color: var(--spotify-text-grey);
-  min-width: 35px;
-  font-variant-numeric: tabular-nums;
-}
-
-.progress-container {
-  flex: 1;
-  height: 16px;
-  display: flex;
-  align-items: center;
-  cursor: pointer;
-}
-
-.progress-bg {
-  width: 100%;
-  height: 4px;
-  background: rgba(255,255,255,0.1);
-  border-radius: 2px;
-  position: relative;
-}
-
-.progress-fill {
-  height: 100%;
-  background: white;
-  border-radius: 2px;
-  position: relative;
-  transition: width 0.1s linear, background 0.2s;
-}
-
-.progress-container:hover .progress-fill {
-  background: var(--spotify-green);
-}
-
-.progress-knob {
-  position: absolute;
-  right: -6px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 12px;
-  height: 12px;
-  background: white;
-  border-radius: 50%;
-  opacity: 0;
-  transition: opacity 0.1s;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.4);
-}
-
-.progress-container:hover .progress-knob {
-  opacity: 1;
-}
-
-.extra-controls {
-  width: 30%;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 12px;
-}
-
-.volume-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.volume-slider {
-  width: 90px;
-  height: 16px;
-  display: flex;
-  align-items: center;
-  cursor: pointer;
-}
-
-.volume-slider::before {
-  content: '';
-  position: absolute;
-  width: 90px;
-  height: 4px;
-  background: rgba(255,255,255,0.1);
-  border-radius: 2px;
-}
-
-.volume-fill {
-  height: 4px;
-  background: white;
-  border-radius: 2px;
-  position: relative;
-  transition: width 0.1s;
-  min-width: 2px;
-}
-
-.volume-group:hover .volume-fill {
-  background: var(--spotify-green);
-}
-
-.spin {
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-.loop-one-indicator {
-  position: absolute;
-  top: 0;
-  right: -4px;
-  background: var(--spotify-green);
-  color: black;
-  font-size: 0.6rem;
-  font-weight: 900;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 0 5px var(--spotify-green);
-}
-
-.speed-btn {
-  font-size: 0.7rem;
-  font-weight: 800;
-  background: rgba(255,255,255,0.05);
-  border-radius: 4px;
-  padding: 2px 6px;
-  min-width: 34px;
-}
-
-/* ─── Queue Overlay ─────────────────────────────── */
-.queue-overlay {
-  position: absolute;
-  bottom: 110px;
-  right: 16px;
-  width: 320px;
-  max-height: 400px;
-  background: rgba(20, 20, 20, 0.85);
-  backdrop-filter: blur(25px);
-  -webkit-backdrop-filter: blur(25px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 16px;
-  box-shadow: 0 10px 40px rgba(0,0,0,0.8);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  z-index: 1000;
-}
-
-.queue-header {
-  padding: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid rgba(255,255,255,0.05);
-}
-
-.queue-header h3 {
-  margin: 0;
-  font-size: 0.95rem;
-  background: var(--spotify-green-gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-
-.close-btn {
-  font-size: 1.5rem;
-  color: var(--spotify-text-grey);
-}
-
-.queue-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 8px;
-}
-
-.queue-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.queue-item:hover {
-  background: rgba(255,255,255,0.05);
-}
-
-.queue-item.current {
-  background: rgba(29, 185, 84, 0.1);
-}
-
-.q-thumb {
-  width: 36px;
-  height: 36px;
-  border-radius: 4px;
-  position: relative;
-  overflow: hidden;
-}
-
+.queue-overlay { position: absolute; bottom: 100px; right: 16px; width: 300px; max-height: 400px; background: rgba(24, 24, 24, 0.9); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; box-shadow: 0 20px 40px rgba(0,0,0,0.6); display: flex; flex-direction: column; overflow: hidden; }
+.queue-header { padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.queue-header h3 { margin: 0; font-size: 0.85rem; color: var(--primary-blue); text-transform: uppercase; letter-spacing: 0.05em; }
+.queue-list { flex: 1; overflow-y: auto; padding: 8px; }
+.queue-item { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 6px; cursor: pointer; transition: background 0.2s; }
+.queue-item:hover { background: rgba(33, 101, 255, 0.15); }
+.queue-item.current { background: rgba(33, 101, 255, 0.25); border: 1px solid rgba(33, 101, 255, 0.3); }
+.q-thumb { width: 32px; height: 32px; border-radius: 4px; position: relative; overflow: hidden; }
 .q-thumb img { width: 100%; height: 100%; object-fit: cover; }
-
-.playing-overlay {
-  position: absolute;
-  inset: 0;
-  background: rgba(0,0,0,0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--spotify-neon);
-}
-
-.q-info {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.q-name {
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: white;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.q-artist {
-  font-size: 0.75rem;
-  color: var(--spotify-text-grey);
-}
-
-.q-remove {
-  color: var(--spotify-text-grey);
-  font-size: 1.2rem;
-  padding: 4px;
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-
-.queue-item:hover .q-remove { opacity: 1; }
-.q-remove:hover { color: #ff5555; }
-
-.empty-queue {
-  padding: 32px;
-  text-align: center;
-  color: var(--spotify-text-grey);
-  font-size: 0.8rem;
-}
-
-/* ─── Transitions ────────────────────────────────── */
-.slide-up-enter-active, .slide-up-leave-active {
-  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-}
-.slide-up-enter-from, .slide-up-leave-to {
-  opacity: 0;
-  transform: translateY(20px) scale(0.95);
-}
+.playing-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; color: var(--primary-blue); }
+.q-info { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.q-name { font-size: 0.8rem; font-weight: 600; color: white; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q-artist { font-size: 0.7rem; color: var(--spotify-text-grey); }
+.slide-up-enter-active, .slide-up-leave-active { transition: all 0.3s ease; }
+.slide-up-enter-from, .slide-up-leave-to { opacity: 0; transform: translateY(10px); }
 
 /* ─── Mobile ─────────────────────────────────────── */
 @media (max-width: 768px) {

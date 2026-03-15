@@ -1,12 +1,29 @@
 <script setup lang="ts">
 import { useMusicStore } from '../stores/musicStore'
 import { useRouter } from 'vue-router'
-import { ChevronLeft, TrendingUp, Users, Radio, Disc } from 'lucide-vue-next'
+import {
+  ChevronLeft, TrendingUp, Users, Radio, Disc,
+  Trophy, Award, Medal, Music, Mic2
+} from 'lucide-vue-next'
 
 const musicStore = useMusicStore()
 const router = useRouter()
 
 const formatPercent = (val: number) => Math.round(val * 100) + '%'
+
+const getTrophyColor = (index: number) => {
+  if (index === 0) return '#b9f2ff' // Diamond
+  if (index === 1) return '#ffd700' // Gold
+  if (index === 2) return '#cd7f32' // Bronze
+  return 'transparent'
+}
+
+const getRankIcon = (index: number) => {
+  if (index === 0) return Trophy
+  if (index === 1) return Award
+  if (index === 2) return Medal
+  return null
+}
 </script>
 
 <template>
@@ -25,12 +42,12 @@ const formatPercent = (val: number) => Math.round(val * 100) + '%'
       <section class="stat-section main-stats">
         <h2>Atributos de Audio</h2>
         <div class="audio-features">
-          <div class="feature-row" v-for="(val, key) in { 
-            'Energía': musicStore.stats?.avg_energy, 
+          <div class="feature-row" v-for="(val, key) in {
+            'Energía': musicStore.stats?.avg_energy,
             'Bailabilidad': musicStore.stats?.avg_danceability,
             'Valencia (Positividad)': musicStore.stats?.avg_valence,
-            'Acústica': musicStore.userProfile?.features?.acousticness || 0,
-            'Instrumentalidad': musicStore.userProfile?.features?.instrumentalness || 0
+            'Acústica': musicStore.stats?.avg_acousticness,
+            'Instrumentalidad': musicStore.stats?.avg_instrumentalness
           }" :key="key">
             <span class="f-label">{{ key }}</span>
             <div class="f-bar-bg">
@@ -42,21 +59,29 @@ const formatPercent = (val: number) => Math.round(val * 100) + '%'
       </section>
 
       <section class="stat-section">
-        <h2><Users :size="20" /> Top Artistas</h2>
-        <div class="list">
-          <div v-for="(count, artist) in musicStore.stats?.top_artists" :key="artist" class="list-item">
-            <span class="item-name">{{ artist }}</span>
-            <span class="item-meta">{{ count }} canciones</span>
+        <h2><Mic2 :size="20" /> Top 10 Artistas</h2>
+        <div class="ranking-list">
+          <div v-for="(count, artist, index) in musicStore.stats?.top_artists" :key="artist" class="rank-item" :class="'rank-' + (index + 1)">
+            <div class="rank-info">
+              <span class="rank-number">{{ index + 1 }}</span>
+              <component :is="getRankIcon(index)" v-if="index < 3" :size="18" :color="getTrophyColor(index)" class="trophy" />
+              <span class="item-name">{{ artist }}</span>
+            </div>
+            <span class="item-meta">{{ count }} reproducciones</span>
           </div>
         </div>
       </section>
 
       <section class="stat-section">
-        <h2><Radio :size="20" /> Géneros Dominantes</h2>
-        <div class="list">
-          <div v-for="(count, genre) in musicStore.stats?.top_genres" :key="genre" class="list-item">
-            <span class="item-name">{{ genre }}</span>
-            <span class="item-meta">{{ count }}% afinidad</span>
+        <h2><Radio :size="20" /> Top 10 Géneros</h2>
+        <div class="ranking-list">
+          <div v-for="(percent, genre, index) in musicStore.stats?.top_genres" :key="genre" class="rank-item" :class="'rank-' + (index + 1)">
+            <div class="rank-info">
+              <span class="rank-number">{{ index + 1 }}</span>
+              <component :is="getRankIcon(index)" v-if="index < 3" :size="18" :color="getTrophyColor(index)" class="trophy" />
+              <span class="item-name">{{ genre }}</span>
+            </div>
+            <span class="item-meta">{{ percent }}% afinidad</span>
           </div>
         </div>
       </section>
@@ -165,19 +190,48 @@ h2 {
 
 .f-val { font-size: 1rem; font-weight: 800; text-align: right; }
 
-.list { display: flex; flex-direction: column; gap: 12px; }
+.ranking-list { display: flex; flex-direction: column; gap: 8px; }
 
-.list-item {
+.rank-item {
   display: flex;
   justify-content: space-between;
-  padding: 16px 20px;
+  align-items: center;
+  padding: 12px 16px;
   background: rgba(255,255,255,0.02);
   border-radius: 12px;
   border: 1px solid rgba(255,255,255,0.03);
+  transition: all 0.3s ease;
 }
 
-.item-name { font-weight: 700; }
-.item-meta { color: var(--spotify-green); font-weight: 700; font-size: 0.85rem; }
+.rank-item:hover {
+  background: rgba(255,255,255,0.05);
+  transform: translateX(4px);
+}
+
+.rank-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.rank-number {
+  font-family: 'Outfit', sans-serif;
+  font-weight: 900;
+  font-size: 0.8rem;
+  color: var(--spotify-text-grey);
+  width: 20px;
+}
+
+.trophy {
+  filter: drop-shadow(0 0 5px currentColor);
+}
+
+.item-name { font-weight: 700; font-size: 0.95rem; }
+.item-meta { color: var(--spotify-green); font-weight: 700; font-size: 0.8rem; opacity: 0.8; }
+
+.rank-1 .item-name { color: #b9f2ff; text-shadow: 0 0 10px rgba(185, 242, 255, 0.3); }
+.rank-2 .item-name { color: #ffd700; }
+.rank-3 .item-name { color: #cd7f32; }
 
 .highlight-cards {
   display: grid;

@@ -1,14 +1,17 @@
 import os
 import time
 import pandas as pd
+import numpy as np
 from ..core.config import LIBRARY_PATH, USER_TRACKS_PATH
 from ..core.logging import Logger
 
 class DataService:
     COLUMNS_ORDER = [
         "spotify_id", "track_name", "artist", "artist_id", "album", "popularity", "genre",
+        "thumbnail", "duration_ms",
         "danceability", "energy", "tempo", "valence", "acousticness", 
-        "instrumentalness", "speechiness", "loudness", "key", "mode"
+        "instrumentalness", "speechiness", "loudness", "key", "mode", "yt_id",
+        "stream_url", "stream_expiry"
     ]
     
     _cache = {
@@ -19,13 +22,11 @@ class DataService:
     }
 
     @classmethod
-    def load_library(cls):
+    def load_library(cls) -> pd.DataFrame:
         """Loads the music library with memory caching and Parquet optimization."""
         if not LIBRARY_PATH.exists():
-            # Return empty but ensure cache is initialized format
             empty_df = pd.DataFrame(columns=cls.COLUMNS_ORDER)
-            cls._cache["ids"] = set()
-            cls._cache["indexed"] = empty_df.set_index("spotify_id") if "spotify_id" in empty_df.columns else pd.DataFrame()
+            cls._cache.update({"ids": set(), "indexed": empty_df.set_index("spotify_id")})
             return empty_df
         
         try:
@@ -35,16 +36,13 @@ class DataService:
 
             start_time = time.time()
             df = pd.read_parquet(LIBRARY_PATH)
-            
-            # Data Integrity
             df = cls._sanitize_df(df)
             
-            # Update Cache
             cls._cache.update({
                 "df": df,
                 "mtime": mtime,
-                "ids": set(df["spotify_id"].astype(str)),
-                "indexed": df[df["energy"] != 0].set_index("spotify_id")
+                "ids": set(df["spotify_id"].values),
+                "indexed": df[df["energy"] > 0].set_index("spotify_id")
             })
             
             Logger.time("DATA", "Library loaded and indexed", start_time)
@@ -54,44 +52,55 @@ class DataService:
             return pd.DataFrame(columns=cls.COLUMNS_ORDER)
 
     @classmethod
-    def get_indexed_library(cls):
+    def get_indexed_library(cls) -> pd.DataFrame:
         """Returns the indexed cache for O(1) lookups."""
         cls.load_library()
         return cls._cache["indexed"]
 
     @classmethod
-    def _sanitize_df(cls, df):
-        """Ensures consistent columns and types."""
-        # Ensure all columns exist
-        for col in cls.COLUMNS_ORDER:
-            if col not in df.columns:
-                df[col] = 0.0 if col in ["danceability", "energy", "tempo", "valence", "acousticness", 
-                                      "instrumentalness", "speechiness", "loudness", "popularity", "key", "mode"] else "Unknown"
+    def _sanitize_df(cls, df: pd.DataFrame) -> pd.DataFrame:
+        """Ensures consistent columns and types using vectorized operations."""
+        # Add missing columns
+        missing = set(cls.COLUMNS_ORDER) - set(df.columns)
+        for col in missing:
+            if col in ["danceability", "energy", "tempo", "valence", "acousticness", 
+                       "instrumentalness", "speechiness", "loudness", "popularity", "key", "mode", "stream_expiry", "duration_ms"]:
+                df[col] = 0.0
+            elif col == "thumbnail":
+                df[col] = None
+            else:
+                df[col] = "Unknown"
         
+        # Repair accidental "Unknown" values from previous bug
+        if "thumbnail" in df.columns:
+            df["thumbnail"] = df["thumbnail"].replace("Unknown", None)
+        if "duration_ms" in df.columns:
+            # Aggressive fix: convert to numeric, making errors (like "Unknown") NaN then 0
+            df["duration_ms"] = pd.to_numeric(df["duration_ms"], errors='coerce').fillna(0).astype('int32')
+        
+        # Cast types efficiently
         numeric_cols = ["danceability", "energy", "tempo", "valence", "acousticness", 
                        "instrumentalness", "speechiness", "loudness"]
-        for col in numeric_cols:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0).astype('float32')
+        df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors='coerce').fillna(0.0).astype('float32')
         
-        int_cols = ["popularity", "key", "mode"]
-        for col in int_cols:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('int32')
+        int_cols = ["popularity", "key", "mode", "duration_ms"]
+        df[int_cols] = df[int_cols].apply(pd.to_numeric, errors='coerce').fillna(0).astype('int32')
             
         return df[cls.COLUMNS_ORDER]
 
     @classmethod
-    def save_library(cls, df):
+    def save_library(cls, df: pd.DataFrame):
         """Saves library to Parquet and invalidates cache."""
         if df.empty: return
         t_start = time.time()
         df = cls._sanitize_df(df).drop_duplicates(subset=["spotify_id"])
         df.to_parquet(LIBRARY_PATH, index=False)
-        cls._cache["mtime"] = 0 # Force reload
+        cls._cache["mtime"] = 0 
         Logger.time("DATA", "Library saved", t_start)
 
     @staticmethod
-    def load_user_data(user_id=None):
-        """Loads user history joined with features."""
+    def load_user_data(user_id=None) -> pd.DataFrame:
+        """Loads user history joined with features using efficient filtering."""
         if not USER_TRACKS_PATH.exists(): return pd.DataFrame()
         
         try:
@@ -101,12 +110,13 @@ class DataService:
                 user_df = user_df[user_df["user_id"].astype(str) == str(user_id)]
             
             lib_df = DataService.load_library()
-            if lib_df.empty: return pd.DataFrame()
+            if lib_df.empty or user_df.empty: return pd.DataFrame()
             
-            # Efficient join
+            # Efficient join on unique IDs
             relevant_ids = user_df["spotify_id"].unique()
             filtered_lib = lib_df[lib_df["spotify_id"].isin(relevant_ids)]
-            # Drop columns from user_df that are also in lib_df (except the join key)
+            
+            # Clean columns to avoid duplication
             user_df_clean = user_df.drop(columns=[c for c in ["track_name", "artist", "album"] if c in user_df.columns])
             res = pd.merge(user_df_clean, filtered_lib, on="spotify_id", how="inner")
             
@@ -117,92 +127,129 @@ class DataService:
             return pd.DataFrame()
 
     @classmethod
-    def append_new_tracks(cls, new_tracks, user_name="DefaultUser", user_id="Unknown"):
+    def append_new_tracks(cls, new_tracks: list, user_name="DefaultUser", user_id="Unknown"):
         """High-performance sync for new tracks."""
         t_start = time.time()
         cls.load_library()
         new_df = pd.DataFrame(new_tracks)
         if new_df.empty: return pd.DataFrame()
         
-        # 1. New Tracks Detection (O(1) lookups)
-        truly_new_ids = [sid for sid in new_df["spotify_id"].astype(str) if sid not in cls._cache["ids"]]
-        truly_new_tracks = new_df[new_df["spotify_id"].astype(str).isin(truly_new_ids)].copy()
+        # Detect truly new items
+        new_df["spotify_id"] = new_df["spotify_id"].astype(str)
+        mask = ~new_df["spotify_id"].isin(cls._cache["ids"])
+        truly_new_tracks = new_df[mask].copy()
         
         if not truly_new_tracks.empty:
             cls._enrich_and_save(truly_new_tracks)
         
-        # 2. History update
+        # Metadata check for existing tracks: if they have "Unknown" thumbnail or 0 duration, update them
+        remaining_mask = new_df["spotify_id"].isin(cls._cache["ids"])
+        existing_updates = new_df[remaining_mask]
+        
+        if not existing_updates.empty:
+            lib_df = cls.load_library()
+            updated = False
+            for _, row in existing_updates.iterrows():
+                sid = row["spotify_id"]
+                idx_mask = lib_df["spotify_id"] == sid
+                if idx_mask.any():
+                    existing_row = lib_df.loc[idx_mask].iloc[0]
+                    # If existing has no thumbnail but new has one, update
+                    if (existing_row.get("thumbnail") in [None, "Unknown", ""]) and row.get("thumbnail"):
+                        lib_df.loc[idx_mask, "thumbnail"] = row["thumbnail"]
+                        updated = True
+                    # If existing has 0 duration but new has one, update
+                    if (existing_row.get("duration_ms", 0) == 0) and row.get("duration_ms", 0) > 0:
+                        lib_df.loc[idx_mask, "duration_ms"] = row["duration_ms"]
+                        updated = True
+            
+            if updated:
+                cls.save_library(lib_df)
+        
         cls._update_history(new_df, user_id, user_name)
         
-        # 3. Quick result for UI
-        res = cls.load_user_data(user_id).tail(100)
         Logger.time("DATA", "Append tracks completed", t_start)
-        return res
+        return cls.load_user_data(user_id).tail(100)
 
     @classmethod
-    def _enrich_and_save(cls, tracks_df):
+    def update_track_metadata(cls, spotify_id: str, metadata: dict, track_name: str = "Unknown", artist: str = "Unknown"):
+        """Updates or CREATES track metadata efficiently."""
+        if not spotify_id: return
+        
+        lib_df = cls.load_library()
+        mask = lib_df["spotify_id"] == spotify_id
+        
+        if not mask.any():
+            # Create new row
+            new_row = {col: 0.0 if col in ["danceability", "energy", "tempo", "valence", "acousticness", 
+                       "instrumentalness", "speechiness", "loudness", "popularity", "key", "mode", "stream_expiry"] else "Unknown" 
+                       for col in cls.COLUMNS_ORDER}
+            new_row.update({"spotify_id": spotify_id, "track_name": track_name, "artist": artist})
+            new_row.update(metadata)
+            lib_df = pd.concat([lib_df, pd.DataFrame([new_row])]).reset_index(drop=True)
+            changed = True
+        else:
+            changed = False
+            for k, v in metadata.items():
+                if k in cls.COLUMNS_ORDER and lib_df.loc[mask, k].iloc[0] != v:
+                    lib_df.loc[mask, k] = v
+                    changed = True
+        
+        if changed:
+            cls.save_library(lib_df)
+            # Incremental CSV sync
+            try:
+                lib_df.to_csv(LIBRARY_PATH.with_suffix(".csv"), index=False)
+            except: pass
+
+    @classmethod
+    def _enrich_and_save(cls, tracks_df: pd.DataFrame):
         from .spotify_service import SpotifyService
         from .audio_analysis_service import AudioAnalysisService
         sp = SpotifyService()
         
-        ids = tracks_df["spotify_id"].tolist()
         enriched = []
+        can_use_sp = "audio_features" not in sp._forbidden_endpoints
         
-        # Check if we can use Spotify Features
-        can_use_spotify = "audio_features" not in SpotifyService._forbidden_endpoints
-        
-        for i in range(0, len(ids), 100):
+        for i in range(0, len(tracks_df), 100):
             batch_df = tracks_df.iloc[i:i+100]
             batch_ids = batch_df["spotify_id"].tolist()
             
-            features_dict = {}
-            if can_use_spotify:
-                sp_features = sp.get_audio_features(batch_ids)
-                for idx, f in enumerate(sp_features):
-                    if f: features_dict[batch_ids[idx]] = f
-                
-                if "audio_features" in SpotifyService._forbidden_endpoints:
-                    can_use_spotify = False
+            features = {}
+            if can_use_sp:
+                sp_f = sp.get_audio_features(batch_ids)
+                features = {batch_ids[j]: f for j, f in enumerate(sp_f) if f}
+                if "audio_features" in sp._forbidden_endpoints: can_use_sp = False
             
-            # Fallback to local analysis for missing features
-            for idx, row in batch_df.iterrows():
+            for _, row in batch_df.iterrows():
                 sid = row["spotify_id"]
                 track_data = row.to_dict()
                 
-                if sid not in features_dict:
-                    # LOCAL ANALYSIS FALLBACK
-                    Logger.info("DATA", f"Analyzing locally: {row['track_name']} - {row['artist']}")
-                    preview_url = AudioAnalysisService.get_preview_from_itunes(row["track_name"], row["artist"])
-                    local_f = AudioAnalysisService.analyze_preview(preview_url)
-                    if local_f:
-                        features_dict[sid] = local_f
+                if sid not in features:
+                    Logger.info("DATA", f"Analyzing locally: {row['track_name']}")
+                    preview = AudioAnalysisService.get_preview_from_itunes(row["track_name"], row["artist"])
+                    local_f = AudioAnalysisService.analyze_preview(preview)
+                    if local_f: features[sid] = local_f
                 
-                if sid in features_dict:
-                    track_data.update({k: features_dict[sid].get(k, 0) for k in cls.COLUMNS_ORDER if k in features_dict[sid]})
+                if sid in features:
+                    track_data.update({k: features[sid].get(k, 0) for k in cls.COLUMNS_ORDER if k in features[sid]})
                 
                 enriched.append(track_data)
             
-        lib_df = cls.load_library()
-        new_lib = pd.concat([lib_df, pd.DataFrame(enriched)]).drop_duplicates(subset=["spotify_id"], keep="last")
-        cls.save_library(new_lib)
+        lib = cls.load_library()
+        final_lib = pd.concat([lib, pd.DataFrame(enriched)]).drop_duplicates(subset=["spotify_id"], keep="last")
+        cls.save_library(final_lib)
 
     @staticmethod
-    def _update_history(new_df, user_id, user_name):
+    def _update_history(new_df: pd.DataFrame, user_id, user_name):
         hist_df = pd.read_csv(USER_TRACKS_PATH) if USER_TRACKS_PATH.exists() else pd.DataFrame(columns=["user_id", "user_name", "spotify_id", "track_name"])
         
         uid = str(user_id)
-        current_user_ids = set(hist_df[hist_df["user_id"].astype(str) == uid]["spotify_id"].astype(str))
+        existing_ids = set(hist_df[hist_df["user_id"].astype(str) == uid]["spotify_id"].astype(str))
         
-        new_rows = []
-        for _, row in new_df.iterrows():
-            if str(row["spotify_id"]) not in current_user_ids:
-                new_rows.append({
-                    "user_id": user_id,
-                    "user_name": user_name,
-                    "spotify_id": row["spotify_id"],
-                    "track_name": row["track_name"]
-                })
-        
-        if new_rows:
-            updated_hist = pd.concat([hist_df, pd.DataFrame(new_rows)]).reset_index(drop=True)
-            updated_hist.to_csv(USER_TRACKS_PATH, index=False)
+        to_add = new_df[~new_df["spotify_id"].astype(str).isin(existing_ids)].copy()
+        if not to_add.empty:
+            to_add["user_id"] = user_id
+            to_add["user_name"] = user_name
+            updated = pd.concat([hist_df, to_add[["user_id", "user_name", "spotify_id", "track_name"]]]).reset_index(drop=True)
+            updated.to_csv(USER_TRACKS_PATH, index=False)

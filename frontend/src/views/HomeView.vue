@@ -42,9 +42,9 @@ const userHistory = computed(() => musicStore.recentTracks)
             <Sparkles :size="14" />
             <span>AI ANALYSIS ACTIVE</span>
         </div>
-        <h1 class="greeting">Hola, {{ musicStore.userProfile?.user_name || 'George' }}</h1>
+        <h1 class="greeting">Hola, {{ musicStore.userProfile?.user_name || 'Insighter' }}</h1>
         <p class="summary">
-          Tu ecosistema sonoro ha evolucionado. Hemos procesado <span class="highlight">{{ musicStore.stats?.total_tracks || '0' }} canciones</span> con algoritmos DSP de última generación.
+          Bienvenido a Spotify Insights. Hemos procesado <span class="highlight">{{ musicStore.stats?.total_tracks || '0' }} canciones</span> con algoritmos DSP.
         </p>
         
 

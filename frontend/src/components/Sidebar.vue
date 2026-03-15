@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Home, Search, Library, Layers, Heart, PlusSquare, Settings, Bell } from 'lucide-vue-next'
+import { Home, Search, Library, Layers, Heart, PlusSquare, Settings, Bell, RefreshCw } from 'lucide-vue-next'
 import { RouterLink } from 'vue-router'
 import { useMusicStore } from '../stores/musicStore'
 
@@ -27,11 +27,11 @@ const musicStore = useMusicStore()
         </RouterLink>
         <RouterLink to="/search" class="nav-item">
           <div class="icon-wrap"><Search :size="20" /></div>
-          <span>IA Search</span>
+          <span>Buscar</span>
         </RouterLink>
         <RouterLink to="/wrapped" class="nav-item wrapped-link">
           <div class="icon-wrap"><Layers :size="20" /></div>
-          <span>Spotify Wrapped</span>
+          <span>Insight Wrapped</span>
         </RouterLink>
       </nav>
 
@@ -71,6 +71,15 @@ const musicStore = useMusicStore()
       </div>
 
       <div class="sidebar-footer">
+        <button class="footer-icon btn-sync" 
+                :class="{ 'active': musicStore.isSpotifyConnected, 'is-syncing': musicStore.isSyncing }" 
+                :title="musicStore.isSpotifyConnected ? 'Sincronizar Spotify (Conectado)' : 'Spotify Desconectado - Click para intentar sincronizar'" 
+                @click="musicStore.syncAccount" 
+                :disabled="musicStore.isSyncing">
+          <RefreshCw :size="20" :class="{ 'spin': musicStore.isSyncing }" />
+          <div v-if="musicStore.isSpotifyConnected" class="status-dot online"></div>
+          <div v-else class="status-dot offline"></div>
+        </button>
         <button class="footer-icon"><Settings :size="20" /></button>
         <button class="footer-icon"><Bell :size="20" /></button>
         <div class="user-trigger">
@@ -401,5 +410,46 @@ const musicStore = useMusicStore()
     width: 100%;
     height: 100%;
     object-fit: cover;
+}
+
+.btn-sync {
+    position: relative;
+    transition: all 0.3s ease;
+}
+
+.btn-sync.active {
+    color: var(--spotify-green);
+}
+
+.btn-sync:not(.active) {
+    color: #ff9800;
+}
+
+.status-dot {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 1.5px solid #121212;
+}
+
+.status-dot.online {
+    background: var(--spotify-green);
+    box-shadow: 0 0 8px var(--spotify-green);
+}
+
+.status-dot.offline {
+    background: #ff9800;
+}
+
+.spin {
+    animation: rotate 1.5s linear infinite;
+}
+
+@keyframes rotate {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
 }
 </style>

@@ -21,15 +21,34 @@ def _quiet_ydl_opts(extra: dict = {}) -> dict:
 class YTMusicService:
 
     @staticmethod
-    def search_and_get_stream(track_name: str, artist: str) -> dict | None:
+    def search_and_get_stream(track_name: str, artist: str, video_id: str = None) -> dict | None:
         """
         Searches YouTube Music for `artist - track_name` and returns
         a direct audio stream URL (no download).
+        If video_id is provided, it attempts to get the stream for that ID directly.
         """
-        # Clean artist if it's "Unknown"
+        # 1. OPTIMIZED PATH: Direct ID
+        if video_id:
+            Logger.info("YTMUSIC", f"Direct stream request for ID: {video_id}")
+            ydl_opts = _quiet_ydl_opts({
+                "format": "bestaudio/best",
+            })
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info_dict = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                    if info_dict and info_dict.get("url"):
+                        return {
+                            "stream_url": info_dict["url"],
+                            "title": info_dict.get("title", f"{artist} - {track_name}"),
+                            "thumbnail": info_dict.get("thumbnail", ""),
+                            "duration": info_dict.get("duration", 0),
+                            "video_id": video_id,
+                        }
+            except Exception as e:
+                Logger.warning("YTMUSIC", f"Direct ID resolution failed for {video_id}: {e}. Falling back to search.")
+
+        # 2. SEARCH PATH: String fallback
         effective_artist = artist if (artist and artist.lower() != "unknown") else ""
-        
-        # Try a few query variations if needed
         queries = []
         if effective_artist:
             queries.append(f"ytsearch5:{effective_artist} - {track_name}")
@@ -41,7 +60,7 @@ class YTMusicService:
         })
 
         for query in queries:
-            Logger.info("YTMUSIC", f"Streaming request for query: {query}")
+            Logger.info("YTMUSIC", f"Streaming search for query: {query}")
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info_dict = ydl.extract_info(query, download=False)
@@ -49,7 +68,6 @@ class YTMusicService:
                     if not info_dict or 'entries' not in info_dict or len(info_dict['entries']) == 0:
                         continue
                     
-                    # Pick the first valid entry
                     for entry in info_dict['entries']:
                         if not entry: continue
                         stream_url = entry.get("url")

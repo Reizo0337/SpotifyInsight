@@ -9,6 +9,7 @@ import { Home, Search, Layers } from 'lucide-vue-next'
 const musicStore = useMusicStore()
 
 onMounted(() => {
+  musicStore.loadPlaybackState()
   musicStore.fetchAllData()
 })
 </script>
@@ -19,8 +20,8 @@ onMounted(() => {
     <div class="top-bar">
         <div></div>
         <div class="user-pill">
-          <span>Premium</span>
-          <div class="avatar">S</div>
+          <span>{{ musicStore.userProfile?.user_name || 'Spotify User' }}</span>
+          <div class="avatar">{{ musicStore.userProfile?.user_name?.charAt(0) || 'S' }}</div>
         </div>
     </div>
     <div class="view-container">
@@ -35,7 +36,7 @@ onMounted(() => {
     </RouterLink>
     <RouterLink to="/search" class="m-nav-item">
       <Search :size="24" />
-      <span>IA Search</span>
+      <span>Buscar</span>
     </RouterLink>
     <RouterLink to="/wrapped" class="m-nav-item">
       <Layers :size="24" />

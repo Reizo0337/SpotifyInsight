@@ -9,6 +9,8 @@ class TrackBase(BaseModel):
     album: Optional[str] = None
     popularity: Optional[int] = 0
     genre: Optional[str] = "Unknown"
+    thumbnail: Optional[str] = None
+    duration_ms: Optional[int] = 0
 
 class TrackFeatures(TrackBase):
     danceability: float = 0.0
