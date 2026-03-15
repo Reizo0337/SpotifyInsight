@@ -5,46 +5,49 @@ from ..core.logging import Logger
 
 class SpotifyService:
     _forbidden_endpoints = set()
-    
+    _last_429_time = 0
+    _429_COOLDOWN = 60 # Seconds to stay frozen after a 429
+
     def __init__(self):
-        self.sp = get_spotify_client()
-        if self.sp:
-            try:
-                user = self.sp.current_user()
-                self.user_name = user["display_name"]
-                self.user_id = user["id"]
-                Logger.info("SPOTIFY", f"Connected as {self.user_name}")
-            except Exception:
-                self.sp = None # Disable if auth fails
-                self.user_name = "Unknown"
-                self.user_id = "Unknown"
-        else:
-            self.user_name = "Unknown"
-            self.user_id = "Unknown"
+        self.sp = None
+        self.user_name = "Guest"
+        self.user_id = "local_user"
+        
+        # Immediate return if we are in global cooldown
+        if "ALL" in self._forbidden_endpoints:
+            if time.time() - self._last_429_time < self._429_COOLDOWN:
+                return
+            else:
+                self._forbidden_endpoints.remove("ALL")
+
+        try:
+            # We try to get the client but we NEVER make a network call here
+            self.sp = get_spotify_client()
+        except Exception as e:
+            Logger.warning("SPOTIFY", f"Auth client failed: {e}")
+            self.sp = None
 
     def is_connected(self):
-        return self.sp is not None
+        # We consider it "connected" only if we have a client AND we aren't in cooldown
+        return self.sp is not None and "ALL" not in self._forbidden_endpoints
 
     def _call_api(self, method_name, *args, **kwargs):
         """Wrapper for API calls with circuit breaker."""
-        if not self.sp or method_name in self._forbidden_endpoints:
+        if not self.sp or "ALL" in self._forbidden_endpoints or method_name in self._forbidden_endpoints:
             return None
             
         try:
             func = getattr(self.sp, method_name)
             return func(*args, **kwargs)
         except Exception as e:
-            msg = str(e)
-            if "403" in msg or "Forbidden" in msg:
-                Logger.error("SPOTIFY", f"Forbidden on {method_name}. Disabling for this session.")
+            msg = str(e).lower()
+            if "403" in msg or "forbidden" in msg:
+                Logger.error("SPOTIFY", f"Forbidden on {method_name}. Disabling.")
                 self._forbidden_endpoints.add(method_name)
-            elif "429" in msg or "Rate limit" in msg:
-                Logger.warning("SPOTIFY", f"Rate Limit (429) hit on {method_name}. Disabling all Spotify calls for now.")
-                # Disable all major calls to avoid further blocking
-                self._forbidden_endpoints.add("audio_features")
-                self._forbidden_endpoints.add("current_user_top_tracks")
-                self._forbidden_endpoints.add("current_user_recently_played")
-                self._forbidden_endpoints.add("recommendations")
+            elif "429" in msg or "rate limit" in msg:
+                Logger.warning("SPOTIFY", f"Rate Limit (429) - Freezing Spotify for {self._429_COOLDOWN}s")
+                self._forbidden_endpoints.add("ALL")
+                self._last_429_time = time.time()
             else:
                 Logger.error("SPOTIFY", f"API Error on {method_name}: {e}")
             return None

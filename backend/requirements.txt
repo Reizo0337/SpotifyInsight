@@ -17,3 +17,4 @@ pyarrow
 scikit-learn
 tqdm
 datasets
+yt-dlp

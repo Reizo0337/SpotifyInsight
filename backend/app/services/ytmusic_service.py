@@ -1,0 +1,116 @@
+"""
+YTMusicService: Uses yt-dlp to search YouTube Music and extract
+a direct audio stream URL without downloading any files.
+"""
+import yt_dlp
+import traceback
+from ..core.logging import Logger
+
+
+def _quiet_ydl_opts(extra: dict = {}) -> dict:
+    base = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": False,
+        "noplaylist": True,
+    }
+    base.update(extra)
+    return base
+
+
+class YTMusicService:
+
+    @staticmethod
+    def search_and_get_stream(track_name: str, artist: str) -> dict | None:
+        """
+        Searches YouTube Music for `artist - track_name` and returns
+        a direct audio stream URL (no download).
+        """
+        # Clean artist if it's "Unknown"
+        effective_artist = artist if (artist and artist.lower() != "unknown") else ""
+        
+        # Try a few query variations if needed
+        queries = []
+        if effective_artist:
+            queries.append(f"ytsearch5:{effective_artist} - {track_name}")
+        queries.append(f"ytsearch5:{track_name}")
+        
+        ydl_opts = _quiet_ydl_opts({
+            "format": "bestaudio/best",
+            "noplaylist": True,
+        })
+
+        for query in queries:
+            Logger.info("YTMUSIC", f"Streaming request for query: {query}")
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info_dict = ydl.extract_info(query, download=False)
+                    
+                    if not info_dict or 'entries' not in info_dict or len(info_dict['entries']) == 0:
+                        continue
+                    
+                    # Pick the first valid entry
+                    for entry in info_dict['entries']:
+                        if not entry: continue
+                        stream_url = entry.get("url")
+                        if stream_url:
+                            Logger.success("YTMUSIC", f"Stream found: {entry.get('title')} (ID: {entry.get('id')})")
+                            return {
+                                "stream_url": stream_url,
+                                "title": entry.get("title", f"{artist} - {track_name}"),
+                                "thumbnail": entry.get("thumbnail", ""),
+                                "duration": entry.get("duration", 0),
+                                "video_id": entry.get("id"),
+                            }
+            except Exception as e:
+                Logger.error("YTMUSIC", f"Search variation failed: {e}")
+                continue
+                
+        return None
+
+    @staticmethod
+    def search_tracks(query: str, limit: int = 10) -> list:
+        """
+        Searches YouTube for tracks matching the query.
+        Returns a list of metadata dicts.
+        """
+        search_query = f"ytsearch{limit}:{query}"
+        Logger.info("YTMUSIC", f"Direct search: {search_query}")
+        
+        ydl_opts = _quiet_ydl_opts({
+            "extract_flat": True,
+        })
+        
+        results = []
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info_dict = ydl.extract_info(search_query, download=False)
+                if not info_dict or 'entries' not in info_dict:
+                    return []
+                
+                for entry in info_dict['entries']:
+                    if not entry: continue
+                    title = entry.get("title", "Unknown")
+                    uploader = entry.get("uploader", "Unknown Channel")
+                    
+                    # Split title if it contains " - "
+                    artist = uploader
+                    track_name = title
+                    if " - " in title:
+                        parts = title.split(" - ", 1)
+                        artist = parts[0].strip()
+                        track_name = parts[1].strip()
+                    
+                    results.append({
+                        "id": entry.get("id"),
+                        "track_name": track_name,
+                        "artist": artist,
+                        "album": uploader, # Use channel name instead of "YouTube Result"
+                        "thumbnail": entry.get("thumbnail") or (entry.get("thumbnails", [{}])[0].get("url") if entry.get("thumbnails") else None),
+                        "duration": entry.get("duration", 0),
+                        "spotify_id": f"yt_{entry.get('id')}"
+                    })
+            return results
+        except Exception as e:
+            Logger.error("YTMUSIC", f"Search extraction failed: {e}")
+            return []
