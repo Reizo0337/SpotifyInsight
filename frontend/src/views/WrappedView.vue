@@ -10,7 +10,7 @@ const loading = ref(!musicStore.stats)
 onMounted(async () => {
   if (!musicStore.stats) {
     loading.value = true
-    await musicStore.fetchStats()
+    await musicStore.fetchAllData()
     loading.value = false
   } else {
     loading.value = false

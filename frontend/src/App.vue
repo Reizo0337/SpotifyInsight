@@ -2,33 +2,39 @@
 import { onMounted } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import Player from './components/Player.vue'
+import TitleBar from './components/TitleBar.vue'
 import { RouterView, RouterLink } from 'vue-router'
 import { useMusicStore } from './stores/musicStore'
 import { Home, Search, Layers } from 'lucide-vue-next'
 
 const musicStore = useMusicStore()
+const isElectron = !!(window as any).electronAPI
 
 onMounted(() => {
   musicStore.loadPlaybackState()
   musicStore.fetchAllData()
+  if (isElectron) {
+    document.body.classList.add('is-electron')
+  }
 })
 </script>
 
 <template>
+  <TitleBar v-if="isElectron" />
   <Sidebar />
   <main class="main-content">
     <div class="top-bar">
-        <div></div>
-        <div class="user-pill">
-          <span>{{ musicStore.userProfile?.user_name || 'Spotify User' }}</span>
-          <div class="avatar">{{ musicStore.userProfile?.user_name?.charAt(0) || 'S' }}</div>
-        </div>
+      <div></div>
+      <div class="user-pill">
+        <span>{{ musicStore.userProfile?.user_name || 'Spotify User' }}</span>
+        <div class="avatar">{{ musicStore.userProfile?.user_name?.charAt(0) || 'S' }}</div>
+      </div>
     </div>
     <div class="view-container">
-        <RouterView />
+      <RouterView />
     </div>
   </main>
-  
+
   <nav class="mobile-nav">
     <RouterLink to="/" class="m-nav-item">
       <Home :size="24" />
@@ -46,6 +52,13 @@ onMounted(() => {
 
   <Player />
 </template>
+
+<style>
+/* Global-ish styles to fix Electron layout */
+body.is-electron #app {
+  padding-top: 40px !important; /* Titlebar height + some margin */
+}
+</style>
 
 <style scoped>
 .mobile-nav {

@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { onMounted, computed, ref } from 'vue'
+import { onMounted, computed } from 'vue'
 import { useMusicStore } from '../stores/musicStore'
 import StatCard from '../components/StatCard.vue'
 import TrackRow from '../components/TrackRow.vue'
-import LoadingScreen from '../components/LoadingScreen.vue'
 import { 
   RefreshCcw, Zap, BarChart3, 
   Wind, Activity, 
@@ -13,13 +12,9 @@ import { useRouter } from 'vue-router'
 
 const musicStore = useMusicStore()
 const router = useRouter()
-const showLoading = ref(true)
 
 onMounted(async () => {
   await musicStore.fetchAllData()
-  setTimeout(() => {
-    showLoading.value = false
-  }, 1200)
 })
 
 const handleSync = async () => {
@@ -30,11 +25,7 @@ const userHistory = computed(() => musicStore.recentTracks)
 </script>
 
 <template>
-  <Transition name="fade">
-    <LoadingScreen v-if="showLoading" />
-  </Transition>
-
-  <div class="home-2026" v-if="!showLoading">
+  <div class="home-2026">
     <header class="cinematic-hero">
       <div class="mesh-glow"></div>
       <div class="hero-content">
