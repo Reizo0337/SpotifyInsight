@@ -8,6 +8,8 @@ DATA_DIR = BASE_DIR / "data" / "processed"
 # File Paths
 LIBRARY_PATH = DATA_DIR / "saved_tracks.parquet"
 USER_TRACKS_PATH = DATA_DIR / "user_tracks.csv"
+PLAYLISTS_PATH = DATA_DIR / "playlists.json"
+FAVORITES_PATH = DATA_DIR / "favorites.json"
 
 # Create directories if they don't exist
 DATA_DIR.mkdir(parents=True, exist_ok=True)

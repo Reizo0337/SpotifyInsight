@@ -1,0 +1,35 @@
+[
+  {
+    "spotify_id": "05IRphYcddexv98wve800I",
+    "track_name": "LUNA",
+    "artist": "SAIKO",
+    "artist_id": "2O8vbr4RYPpk6MRA4fio7u",
+    "album": "SAKURA",
+    "popularity": 60,
+    "genre": "Urbano latino",
+    "thumbnail": "https://is1-ssl.mzstatic.com/image/thumb/Music211/v4/e5/dd/48/e5dd486c-62df-3b91-fcf2-62a44ce32c5d/198391613746.jpg/100x100bb.jpg",
+    "duration_ms": 240923
+  },
+  {
+    "spotify_id": "4M3I01LZqJDFJxs4veb7jt",
+    "track_name": "LA FAVORITA DE DIOS",
+    "artist": "ROA",
+    "artist_id": "4cYbf45YbZptNISnhay0xH",
+    "album": "Private Suite (Vol. 3)",
+    "popularity": 60,
+    "genre": "Urbano latino",
+    "thumbnail": "https://is1-ssl.mzstatic.com/image/thumb/Music221/v4/e6/a4/4c/e6a44cef-dec6-f7fe-ef9a-1380527cbd2a/25UM2IM01443.rgb.jpg/100x100bb.jpg",
+    "duration_ms": 234512
+  },
+  {
+    "spotify_id": "test_track_123",
+    "track_name": "Antigravity Test Song",
+    "artist": "Agentic AI",
+    "artist_id": null,
+    "album": "The Coding Sessions",
+    "popularity": 0,
+    "genre": "Pop",
+    "thumbnail": null,
+    "duration_ms": 180000
+  }
+]

@@ -4,6 +4,10 @@ import { RouterLink } from 'vue-router'
 import { useMusicStore } from '../stores/musicStore'
 
 const musicStore = useMusicStore()
+
+const createNewPlaylist = async () => {
+  musicStore.isCreateModalOpen = true
+}
 </script>
 
 <template>
@@ -43,30 +47,30 @@ const musicStore = useMusicStore()
             <Library :size="20" />
             <span>Biblioteca</span>
           </div>
-          <button class="add-btn"><PlusSquare :size="18" /></button>
+          <button class="add-btn" @click="createNewPlaylist" title="Crear playlist"><PlusSquare :size="18" /></button>
         </div>
         <div class="lib-divider"></div>
 
         <div class="lib-content">
-          <div class="list-item active">
+          <RouterLink to="/collection/tracks" class="list-item" active-class="active">
             <div class="thumb heart-thumb">
                 <Heart :size="14" fill="white" />
             </div>
             <div class="details">
               <p class="name">Me gusta</p>
-              <p class="meta">Lista • {{ musicStore.stats?.total_tracks || 0 }} canciones</p>
+              <p class="meta">Lista • {{ musicStore.favorites.length }} canciones</p>
             </div>
-          </div>
+          </RouterLink>
           
-          <div class="list-item">
-            <div class="thumb synth-thumb">
-                <Activity :size="14" />
+          <RouterLink v-for="playlist in musicStore.playlists" :key="playlist.id" :to="'/playlist/' + playlist.id" class="list-item" active-class="active">
+            <div class="thumb playlist-thumb">
+                <Library :size="14" />
             </div>
             <div class="details">
-              <p class="name">Vibe Analysis</p>
-              <p class="meta">Smart List</p>
+              <p class="name">{{ playlist.name }}</p>
+              <p class="meta">Playlist • {{ playlist.tracks?.length || 0 }} canciones</p>
             </div>
-          </div>
+          </RouterLink>
         </div>
       </div>
 
@@ -376,6 +380,11 @@ const musicStore = useMusicStore()
 .synth-thumb {
     background: #282828;
     color: var(--spotify-neon);
+}
+
+.playlist-thumb {
+    background: #282828;
+    color: var(--spotify-text-grey);
 }
 
 .details .name {

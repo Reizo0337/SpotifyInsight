@@ -6,6 +6,7 @@ import TitleBar from './components/TitleBar.vue'
 import { RouterView, RouterLink } from 'vue-router'
 import { useMusicStore } from './stores/musicStore'
 import { Home, Search, Layers } from 'lucide-vue-next'
+import CreatePlaylistModal from './components/CreatePlaylistModal.vue'
 
 import { useRouter } from 'vue-router'
 
@@ -13,9 +14,14 @@ const musicStore = useMusicStore()
 const router = useRouter()
 const isElectron = !!(window as any).electronAPI
 
-onMounted(() => {
+onMounted(async () => {
   musicStore.loadPlaybackState()
-  musicStore.fetchAllData()
+  // Fetch all data in parallel — critical for playlists to persist on refresh
+  await Promise.all([
+    musicStore.fetchAllData(),
+    musicStore.fetchPlaylists(),
+    musicStore.fetchFavorites(),
+  ])
   if (isElectron) {
     document.body.classList.add('is-electron')
   }
@@ -50,6 +56,7 @@ onMounted(() => {
   </nav>
 
   <Player />
+  <CreatePlaylistModal />
 </template>
 
 <style>

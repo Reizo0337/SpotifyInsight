@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
-import { Heart, MoreHorizontal, ListPlus, Play } from 'lucide-vue-next'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { Heart, MoreHorizontal, ListPlus, Play, ChevronRight } from 'lucide-vue-next'
 import { useMusicStore } from '../stores/musicStore'
 
 const props = defineProps<{
@@ -12,7 +12,12 @@ const props = defineProps<{
 
 const store = useMusicStore()
 const showMenu = ref(false)
+const showPlaylistSubmenu = ref(false)
 const menuRef = ref<HTMLElement | null>(null)
+
+const isFavorite = computed(() => {
+  return store.favorites.some(t => t.spotify_id === props.track.spotify_id)
+})
 
 const handlePlay = () => {
     store.setNowPlaying(props.track, props.contextQueue)
@@ -26,6 +31,17 @@ const addToQueue = () => {
 const playNext = () => {
   store.insertNext(props.track)
   showMenu.value = false
+}
+
+const toggleFavorite = (e: Event) => {
+  e.stopPropagation()
+  store.toggleFavorite(props.track)
+}
+
+const addToPlaylist = async (playlistId: string) => {
+  await store.addTrackToPlaylist(playlistId, props.track)
+  showMenu.value = false
+  showPlaylistSubmenu.value = false
 }
 
 const formatTime = (ms: number) => {
@@ -49,11 +65,13 @@ const formatPlayedAt = (timestamp: number) => {
 const toggleMenu = (e: Event) => {
   e.stopPropagation()
   showMenu.value = !showMenu.value
+  showPlaylistSubmenu.value = false
 }
 
 const closeMenu = (e: MouseEvent) => {
   if (menuRef.value && !menuRef.value.contains(e.target as Node)) {
     showMenu.value = false
+    showPlaylistSubmenu.value = false
   }
 }
 
@@ -85,7 +103,9 @@ onUnmounted(() => window.removeEventListener('click', closeMenu))
     
     <div class="actions-col">
       <span class="played-at" v-if="showPlayedAt && track.played_at">{{ formatPlayedAt(track.played_at) }}</span>
-      <button class="action-btn" title="Me gusta"><Heart :size="18" /></button>
+      <button class="action-btn" :class="{ 'is-fav': isFavorite }" @click="toggleFavorite" :title="isFavorite ? 'Quitar de favoritos' : 'Añadir a favoritos'">
+        <Heart :size="18" :fill="isFavorite ? '#1db954' : 'none'" :stroke="isFavorite ? '#1db954' : 'currentColor'" />
+      </button>
       <span class="duration">{{ formatTime(track.duration_ms || track.duration) }}</span>
       <div class="menu-container" ref="menuRef">
         <button class="action-btn opt" @click="toggleMenu" title="Más opciones">
@@ -95,6 +115,25 @@ onUnmounted(() => window.removeEventListener('click', closeMenu))
           <div v-if="showMenu" class="track-menu">
             <button @click="playNext"><Play :size="14" /> Reproducir a continuación</button>
             <button @click="addToQueue"><ListPlus :size="14" /> Añadir a la cola</button>
+            <div class="menu-divider"></div>
+            <button @click="toggleFavorite">
+               <Heart :size="14" :fill="isFavorite ? '#1db954' : 'none'" /> 
+               {{ isFavorite ? 'Quitar de favoritos' : 'Añadir a favoritos' }}
+            </button>
+            <div class="submenu-trigger" @mouseenter="showPlaylistSubmenu = true">
+                <button class="has-submenu">
+                    <ListPlus :size="14" /> Añadir a playlist
+                    <ChevronRight :size="14" class="arrow" />
+                </button>
+                <Transition name="fade">
+                    <div v-if="showPlaylistSubmenu" class="playlist-submenu" @mouseleave="showPlaylistSubmenu = false">
+                        <button v-for="pl in store.playlists" :key="pl.id" @click="addToPlaylist(pl.id)">
+                            {{ pl.name }}
+                        </button>
+                        <div v-if="store.playlists.length === 0" class="no-playlists">No tienes playlists</div>
+                    </div>
+                </Transition>
+            </div>
           </div>
         </Transition>
       </div>
@@ -147,6 +186,15 @@ onUnmounted(() => window.removeEventListener('click', closeMenu))
 .track-menu { position: absolute; top: 100%; right: 0; background: #282828; border-radius: 4px; box-shadow: 0 16px 24px rgba(0,0,0,0.4); padding: 4px; min-width: 220px; z-index: 100; }
 .track-menu button { width: 100%; padding: 12px; font-size: 0.85rem; color: #b3b3b3; text-align: left; border-radius: 2px; display: flex; align-items: center; gap: 12px; }
 .track-menu button:hover { background: rgba(255,255,255,0.1); color: white; }
+
+.menu-divider { height: 1px; background: rgba(255,255,255,0.1); margin: 4px 0; }
+
+.submenu-trigger { position: relative; }
+.has-submenu { justify-content: space-between !important; }
+.playlist-submenu { position: absolute; left: calc(100% + 4px); top: 0; background: #282828; border-radius: 4px; box-shadow: 0 16px 24px rgba(0,0,0,0.4); padding: 4px; min-width: 180px; z-index: 101; }
+.no-playlists { padding: 12px; font-size: 0.8rem; color: #727272; }
+.is-fav { opacity: 1 !important; color: var(--spotify-green) !important; }
+
 .fade-enter-active, .fade-leave-active { transition: opacity 0.2s, transform 0.2s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; transform: scale(0.95); }
 </style>

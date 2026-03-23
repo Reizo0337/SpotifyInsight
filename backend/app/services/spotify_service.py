@@ -42,7 +42,7 @@ class SpotifyService:
 
     def _call_api(self, method_name, *args, **kwargs):
         """Wrapper for API calls with circuit breaker."""
-        if not self.sp or "ALL" in self._forbidden_endpoints or method_name in self._forbidden_endpoints:
+        if not self.sp or "ALL" in self._forbidden_endpoints:
             return None
             
         try:
@@ -51,8 +51,8 @@ class SpotifyService:
         except Exception as e:
             msg = str(e).lower()
             if "403" in msg or "forbidden" in msg:
-                Logger.error("SPOTIFY", f"Forbidden on {method_name}. Disabling.")
-                self._forbidden_endpoints.add(method_name)
+                Logger.warning("SPOTIFY", f"Access forbidden on {method_name} (likely a private resource).")
+                # We don't disable anymore, because it might be just this specific resource
             elif "429" in msg or "rate limit" in msg:
                 Logger.warning("SPOTIFY", f"Rate Limit (429) - Freezing Spotify for {self._429_COOLDOWN}s")
                 self._forbidden_endpoints.add("ALL")
@@ -69,7 +69,7 @@ class SpotifyService:
         all_artists = []
         artist_ids = [aid for aid in artist_ids if aid]
         for i in range(0, len(artist_ids), 50):
-            batch = artist_ids[i:i+50]
+            batch = list(artist_ids)[i:i+50]
             res = self._call_api("artists", batch)
             if res and "artists" in res:
                 all_artists.extend(res["artists"])
@@ -79,7 +79,7 @@ class SpotifyService:
         all_tracks = []
         track_ids = [tid for tid in track_ids if tid]
         for i in range(0, len(track_ids), 50):
-            batch = track_ids[i:i+50]
+            batch = list(track_ids)[i:i+50]
             res = self._call_api("tracks", batch)
             if res and "tracks" in res:
                 all_tracks.extend(res["tracks"])
@@ -203,8 +203,9 @@ class SpotifyService:
             "target_features": af if af else None
         }
 
-    def get_recommendations_from_spotify(self, seed_track_ids, limit=10):
-        seeds = [str(tid) for tid in seed_track_ids if tid and str(tid) != "0"][:5]
+    def get_recommendations_from_spotify(self, seed_tracks, limit=10):
+        # Filter for valid-looking Spotify IDs (alphanumeric, > 10 chars)
+        seeds = [str(tid) for tid in seed_tracks if tid and str(tid) != "0" and len(str(tid)) > 10][:5]
         if not seeds: return []
         
         results = self._call_api("recommendations", seed_tracks=seeds, limit=limit)
@@ -219,6 +220,121 @@ class SpotifyService:
             "popularity": t.get("popularity", 0),
             "spotify_id": t["id"]
         } for t in results["tracks"]]
+
+    def get_user_playlists(self, limit=50):
+        if not self.sp: return []
+        results = self._call_api("current_user_playlists", limit=limit)
+        if not results: return []
+        return [{
+            "id": it["id"],
+            "name": it["name"],
+            "thumbnail": it["images"][0]["url"] if it.get("images") else None,
+            "track_count": it["tracks"]["total"],
+            "owner": it["owner"]["display_name"],
+            "is_public": it["public"]
+        } for it in results.get("items", [])]
+
+    def _get_tracks_raw(self, access_token: str, playlist_id: str, market: str = "ES") -> list | None:
+        """Fetch tracks via raw HTTP, always passing a market to avoid empty results."""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        all_tracks = []
+        url = f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks"
+        params = {"market": market, "limit": 100}
+
+        while url:
+            try:
+                res = requests.get(url, headers=headers, params=params)
+                params = {}  # Only pass params on the first request; 'next' URL already has them
+                if res.status_code == 200:
+                    data = res.json()
+                    for item in data.get("items", []):
+                        # PlaylistTrackObject always has 'track' key per Spotify docs
+                        t = item.get("track")
+                        if t and t.get("id") and t.get("type") == "track":
+                            artists = t.get("artists", [])
+                            album = t.get("album", {})
+                            images = album.get("images", [])
+                            all_tracks.append({
+                                "spotify_id": t["id"],
+                                "track_name": t.get("name", "Unknown"),
+                                "artist": artists[0]["name"] if artists else "Unknown",
+                                "album": album.get("name", "Unknown"),
+                                "thumbnail": images[0]["url"] if images else None,
+                                "duration_ms": t.get("duration_ms", 0),
+                                "popularity": t.get("popularity", 0)
+                            })
+                    url = data.get("next")  # paginate
+                elif res.status_code == 403:
+                    Logger.warning("SPOTIFY", f"403 on /tracks for {playlist_id} (not owner/collaborator)")
+                    return None
+                else:
+                    Logger.warning("SPOTIFY", f"Unexpected {res.status_code} on tracks for {playlist_id}")
+                    return None
+            except Exception as e:
+                Logger.warning("SPOTIFY", f"Raw tracks fetch error: {e}")
+                return None
+        return all_tracks
+
+    def get_playlist_tracks(self, playlist_id):
+        """
+        Fetch tracks for a playlist. Goes directly to web scraping since 
+        the Spotify API requires the user to be the owner/collaborator for /tracks.
+        Enriches each scraped track with full metadata from the Spotify API.
+        """
+        if not self.sp: return None
+
+        from .playlist_scraper import scrape_playlist_tracks
+        Logger.info("SPOTIFY", f"Scraping tracks for {playlist_id}...")
+        scraped = scrape_playlist_tracks(playlist_id)
+        if not scraped:
+            return []
+
+        enriched = []
+        for t in scraped:
+            tid = t.get("spotify_id")
+            if tid and tid != playlist_id:
+                try:
+                    full = self._call_api("track", tid)
+                    if full:
+                        artists = full.get("artists", [])
+                        album = full.get("album", {})
+                        images = album.get("images", [])
+                        t.update({
+                            "artist": artists[0]["name"] if artists else t["artist"],
+                            "album": album.get("name", "Unknown"),
+                            "thumbnail": images[0]["url"] if images else None,
+                            "duration_ms": full.get("duration_ms", 0),
+                            "popularity": full.get("popularity", 0),
+                        })
+                except Exception:
+                    pass
+            if t.get("spotify_id"):
+                enriched.append(t)
+
+        Logger.info("SPOTIFY", f"get_playlist_tracks: returned {len(enriched)} tracks")
+        return enriched
+
+
+    def get_playlist_metadata(self, playlist_id):
+        if not self.sp: return None
+        res = self._call_api("playlist", playlist_id)
+        if not res: return None
+        
+        tracks_obj = res.get("tracks", {})
+        Logger.info("SPOTIFY", f"Playlist {playlist_id} tracks_obj keys: {list(tracks_obj.keys()) if isinstance(tracks_obj, dict) else 'Not a dict'}")
+        if isinstance(tracks_obj, dict):
+            Logger.info("SPOTIFY", f"Playlist {playlist_id} total tracks from API: {tracks_obj.get('total')}")
+        
+        images = res.get("images", [])
+        
+        return {
+            "id": res.get("id", playlist_id),
+            "name": res.get("name", "Unknown Playlist"),
+            "thumbnail": images[0]["url"] if images else None,
+            "track_count": tracks_obj.get("total", 0) if isinstance(tracks_obj, dict) else 0,
+            "owner": res.get("owner", {}).get("display_name", "Unknown"),
+            "is_public": res.get("public", True)
+        }
 
     def repair_library_metadata(self):
         """Autonomously find and fix missing popularity, genres, and durations."""

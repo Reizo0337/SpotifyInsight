@@ -5,8 +5,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from spotipy.oauth2 import SpotifyOAuth, SpotifyClientCredentials
+
 def get_spotify_client():
-    """Returns a spotipy client using OAuth. Resilience added for rate limits."""
+    # ... existing OAuth client
     try:
         sp = spotipy.Spotify(
             auth_manager=SpotifyOAuth(
@@ -19,4 +21,18 @@ def get_spotify_client():
         return sp
     except Exception as e:
         print(f"[SPOTIFY-AUTH] Setup error: {e}")
+        return None
+
+def get_spotify_public_client():
+    """Returns a client for public endpoints using Client Credentials flow."""
+    try:
+        sp = spotipy.Spotify(
+            auth_manager=SpotifyClientCredentials(
+                client_id=os.getenv("SPOTIPY_CLIENT_ID"),
+                client_secret=os.getenv("SPOTIPY_CLIENT_SECRET")
+            )
+        )
+        return sp
+    except Exception as e:
+        print(f"[SPOTIFY-AUTH] Public setup error: {e}")
         return None

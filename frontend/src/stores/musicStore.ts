@@ -34,10 +34,18 @@ interface MusicState {
   isReload: boolean
   shouldAutoResume: boolean
   isPlaying: boolean 
+  playlists: any[]
+  favorites: any[]
+  spotifyPlaylists: any[]
+  isCreateModalOpen: boolean
 }
 
 export const useMusicStore = defineStore('music', {
   state: (): MusicState => ({
+    playlists: [] as any[],
+    favorites: [] as any[],
+    spotifyPlaylists: [] as any[],
+    isCreateModalOpen: false,
     recentTracks: [],
     userProfile: null,
     stats: null,
@@ -74,16 +82,21 @@ export const useMusicStore = defineStore('music', {
   },
 
   actions: {
-    async _apiCall(endpoint: string, params = {}, mock?: any, method = 'get', body?: any) {
+    async _apiCall(endpoint: string, params = {}, method: 'get' | 'post' | 'delete' = 'get', body?: any, mock?: any) {
       if (MOCK_MODE && mock !== undefined) return mock
       try {
-        const config = { params }
-        const { data } = method === 'post' 
-          ? await axios.post(`${API_BASE}${endpoint}`, body, config)
-          : await axios.get(`${API_BASE}${endpoint}`, config)
-        return data
+        const url = `${API_BASE}${endpoint}`
+        let res;
+        if (method === 'post') {
+          res = await axios.post(url, body, { params })
+        } else if (method === 'delete') {
+          res = await axios.delete(url, { params })
+        } else {
+          res = await axios.get(url, { params })
+        }
+        return res.data
       } catch (err) {
-        console.error(`API Error [${endpoint}]:`, err)
+        console.error(`API Error [${method.toUpperCase()} ${endpoint}]:`, err)
         return null
       }
     },
@@ -105,10 +118,10 @@ export const useMusicStore = defineStore('music', {
 
     async fetchAllData() {
       const [u, s, r, h, st] = await Promise.all([
-        this._apiCall('/user-profile', {}, mockData.MOCK_USER_PROFILE),
-        this._apiCall('/stats', {}, mockData.MOCK_STATS),
-        this._apiCall('/recommendations', { limit: 20 }, mockData.MOCK_TRACKS.slice(0, 10)),
-        this._apiCall('/history', { limit: 50 }, mockData.MOCK_TRACKS),
+        this._apiCall('/user-profile', {}, 'get', null, mockData.MOCK_USER_PROFILE),
+        this._apiCall('/stats', {}, 'get', null, mockData.MOCK_STATS),
+        this._apiCall('/recommendations', { limit: 20 }, 'get', null, mockData.MOCK_TRACKS.slice(0, 10)),
+        this._apiCall('/history', { limit: 50 }, 'get', null, mockData.MOCK_TRACKS),
         this._apiCall('/status')
       ])
       if (u) this.userProfile = u
@@ -120,7 +133,6 @@ export const useMusicStore = defineStore('music', {
 
     async logTrackPlay(track: any) {
       if (!track) return
-      // Prevent internal IDs (like "0") from being sent if possible
       const payload = {
           spotify_id: track.spotify_id || track.id,
           track_name: track.track_name,
@@ -129,8 +141,7 @@ export const useMusicStore = defineStore('music', {
           thumbnail: track.thumbnail,
           duration_ms: track.duration_ms
       }
-      await this._apiCall('/music/played', {}, undefined, 'post', payload)
-      // Refresh history silently
+      await this._apiCall('/music/played', {}, 'post', payload)
       const h = await this._apiCall('/history', { limit: 50 })
       if (h) this.recentTracks = h
     },
@@ -257,6 +268,112 @@ export const useMusicStore = defineStore('music', {
         else return
       }
       this._changeTrack(next)
+      this.fetchPlaylists()
+      this.fetchFavorites()
+    },
+
+    async init() {
+      // Inicia la aplicación cargando todos los datos necesarios
+      if (this.isReload) {
+        // if reload, maybe we want to do something specific
+      }
+      await this.fetchAllData()
+      await this.fetchPlaylists()
+      await this.fetchFavorites()
+    },
+
+    async fetchPlaylists() {
+      try {
+        const data = await this._apiCall('/playlists')
+        if (data) this.playlists = data
+      } catch (e) {
+        console.error('Fetch playlists failed', e)
+      }
+    },
+
+
+    async fetchSpotifyPlaylistInfo(url: string) {
+      return await this._apiCall(`/spotify/playlist-info?url=${encodeURIComponent(url)}`)
+    },
+
+    async importSpotifyPlaylist(playlistId: string, name: string, targetPlaylistId: string | null = null) {
+      await this._apiCall('/spotify/playlists/import', {}, 'post', { 
+        playlist_id: playlistId, 
+        name,
+        target_playlist_id: targetPlaylistId 
+      })
+      await this.fetchPlaylists()
+    },
+
+    async fetchFavorites() {
+      try {
+        const data = await this._apiCall('/favorites')
+        if (data) this.favorites = data
+      } catch (e) {
+        console.error('Fetch favorites failed', e)
+      }
+    },
+
+    async createPlaylist(name: string, isPublic: boolean = true) {
+      try {
+        const resp = await this._apiCall('/playlists', {}, 'post', { name, is_public: isPublic })
+        if (resp) {
+          this.playlists.push(resp)
+          return resp
+        }
+      } catch (e) {
+        console.error('Create playlist failed', e)
+      }
+      return null
+    },
+
+    async toggleFavorite(track: any) {
+      try {
+        const resp = await this._apiCall('/favorites/toggle', {}, 'post', track)
+        if (resp && resp.status === 'success') {
+          if (resp.is_favorite) {
+            this.favorites.unshift(track)
+          } else {
+            this.favorites = this.favorites.filter(t => t.spotify_id !== track.spotify_id)
+          }
+          return resp.is_favorite
+        }
+      } catch (e) {
+        console.error('Toggle favorite failed', e)
+      }
+      return false
+    },
+
+    async addTrackToPlaylist(playlistId: string, track: any) {
+      try {
+        const resp = await this._apiCall(`/playlists/${playlistId}/tracks`, {}, 'post', track)
+        if (resp && resp.status === 'success') {
+          const pl = this.playlists.find(p => p.id === playlistId)
+          if (pl && !pl.tracks.includes(track.spotify_id)) {
+            pl.tracks.push(track.spotify_id)
+          }
+          return true
+        }
+      } catch (e) {
+        console.error('Add to playlist failed', e)
+      }
+      return false
+    },
+
+    async removeTrackFromPlaylist(playlistId: string, spotifyId: string) {
+      try {
+        const resp = await this._apiCall(`/playlists/${playlistId}/tracks/${spotifyId}`, {}, 'delete')
+        if (resp && resp.status === 'success') {
+          const pl = this.playlists.find(p => p.id === playlistId)
+          if (pl) {
+            pl.tracks = pl.tracks.filter((id: string) => id !== spotifyId)
+          }
+          return true
+        }
+      } catch (e) {
+        console.error('Remove from playlist failed', e)
+      }
+      return false
     },
 
     playPrevious() {
