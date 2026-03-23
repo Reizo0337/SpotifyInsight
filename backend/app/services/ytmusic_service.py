@@ -87,6 +87,14 @@ class YTMusicService:
         return None
 
     @staticmethod
+    def search_and_get_id(track_name: str, artist: str) -> str | None:
+        """
+        Quickly resolves a YouTube Video ID for a track name and artist.
+        """
+        data = YTMusicService.search_and_get_stream(track_name, artist)
+        return data.get("video_id") if data else None
+
+    @staticmethod
     def search_tracks(query: str, limit: int = 10) -> list:
         """
         Searches YouTube for tracks matching the query.

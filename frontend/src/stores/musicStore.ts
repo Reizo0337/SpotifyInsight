@@ -6,123 +6,134 @@ const API_BASE = 'http://localhost:8000/api'
 const MOCK_MODE = false 
 
 // Typed state for better DX
-interface MusicState {
-  recentTracks: any[]
-  userProfile: any
-  stats: any
-  isSyncing: boolean
-  isSpotifyConnected: boolean
-  lastSyncStatus: any
-  recommendations: any[]
-  searchResults: any[]
-  isLoading: boolean
-  nowPlaying: any
-  queue: any[]
-  currentIndex: number
-  isShuffle: boolean
-  shuffledQueue: any[]
-  loopMode: 'off' | 'all' | 'one'
-  streamUrl: string | null
-  streamMeta: any
-  isLoadingStream: boolean
-  preloadedNext: { trackId: string, data: any } | null
-  isPreloading: boolean
-  streamCache: Map<string, { data: any, timestamp: number }>
-  volume: number
-  playbackRate: number
-  persistedTime: number
-  isReload: boolean
-  shouldAutoResume: boolean
-  isPlaying: boolean 
-  playlists: any[]
-  favorites: any[]
-  spotifyPlaylists: any[]
-  isCreateModalOpen: boolean
-}
+// Typed state for better DX - placeholder for expansion
 
 export const useMusicStore = defineStore('music', {
-  state: (): MusicState => ({
-    playlists: [] as any[],
-    favorites: [] as any[],
-    spotifyPlaylists: [] as any[],
-    isCreateModalOpen: false,
-    recentTracks: [],
+  state: (): any => ({
+    accessToken: localStorage.getItem('nebula-token'),
     userProfile: null,
     stats: null,
-    isSyncing: false,
-    isSpotifyConnected: false,
-    lastSyncStatus: null,
     recommendations: [],
+    recentTracks: [],
+    isSpotifyConnected: false,
+    favorites: [],
+    playlists: [],
     searchResults: [],
-    isLoading: false,
+    
+    // Playback
     nowPlaying: null,
     queue: [],
     currentIndex: -1,
     isShuffle: false,
     shuffledQueue: [],
     loopMode: 'off',
+    isPlaying: false,
+    volume: Number(localStorage.getItem('m-volume')) || 0.7,
+    playbackRate: Number(localStorage.getItem('m-speed')) || 1.0,
+    persistedTime: Number(localStorage.getItem('m-time')) || 0,
+    
+    // UI / Loading
+    isLoading: false,
+    isLoadingStream: false,
     streamUrl: null,
     streamMeta: null,
-    isLoadingStream: false,
+    isReload: true,
+    shouldAutoResume: false,
+    isCreateModalOpen: false,
+
+    // Stream Caching & Preloading
+    streamCache: new Map(),
     preloadedNext: null,
     isPreloading: false,
-    streamCache: new Map(),
-    volume: Number(localStorage.getItem('m-volume')) || 0.7,
-    playbackRate: Number(localStorage.getItem('m-speed')) || 1,
-    persistedTime: 0,
-    isReload: (performance.getEntriesByType('navigation')[0] as any)?.type === 'reload',
-    shouldAutoResume: false,
-    isPlaying: false,
+    isSyncing: false
   }),
 
   getters: {
-    hasData: (state) => !!(state.userProfile && state.stats),
-    currentQueue: (state) => state.isShuffle ? state.shuffledQueue : state.queue,
+    currentQueue: (state) => {
+      return state.isShuffle ? state.shuffledQueue : state.queue
+    },
     activeTrack: (state) => state.nowPlaying
   },
 
   actions: {
     async _apiCall(endpoint: string, params = {}, method: 'get' | 'post' | 'delete' = 'get', body?: any, mock?: any) {
       if (MOCK_MODE && mock !== undefined) return mock
+      
+      const publicEndpoints = ['/auth/login', '/auth/register']
+      if (!this.accessToken && !publicEndpoints.includes(endpoint)) {
+        // Strictly block all unauthorized transmissions for cosmic safety
+        return null
+      }
+
       try {
         const url = `${API_BASE}${endpoint}`
+        const config: any = { params, headers: {} }
+        
+        if (this.accessToken) {
+          config.headers['Authorization'] = `Bearer ${this.accessToken}`
+        }
+        
         let res;
         if (method === 'post') {
-          res = await axios.post(url, body, { params })
+          res = await axios.post(url, body, config)
         } else if (method === 'delete') {
-          res = await axios.delete(url, { params })
+          res = await axios.delete(url, config)
         } else {
-          res = await axios.get(url, { params })
+          res = await axios.get(url, config)
         }
         return res.data
-      } catch (err) {
+      } catch (err: any) {
+        if (err.response?.status === 401) {
+          this.logout()
+        }
         console.error(`API Error [${method.toUpperCase()} ${endpoint}]:`, err)
         return null
       }
     },
 
-    async syncAccount() {
-      this.isSyncing = true
-      try {
-        const data = await this._apiCall('/sync')
-        if (data && data.status !== 'error') {
-          this.lastSyncStatus = data
-          await this.fetchAllData()
-          return true
-        }
-        return false
-      } finally {
-        this.isSyncing = false
+    async login(credentials: any) {
+      const form = new FormData()
+      form.append('username', credentials.username)
+      form.append('password', credentials.password)
+      
+      const data = await this._apiCall('/auth/login', {}, 'post', form)
+      if (data && data.access_token) {
+        this.accessToken = data.access_token
+        localStorage.setItem('nebula-token', data.access_token)
+        await this.fetchAllData()
+        return true
+      }
+      return false
+    },
+
+    async register(userData: any) {
+      const data = await this._apiCall('/auth/register', {}, 'post', userData)
+      if (data && data.access_token) {
+        this.accessToken = data.access_token
+        localStorage.setItem('nebula-token', data.access_token)
+        await this.fetchAllData()
+        return true
+      }
+      return false
+    },
+
+    logout() {
+      this.accessToken = null
+      localStorage.removeItem('nebula-token')
+      // Only redirect if not already on an auth page, to avoid loops
+      if (window.location.pathname !== '/login' && window.location.pathname !== '/register') {
+        window.location.href = '/login'
       }
     },
 
     async fetchAllData() {
+      // Re-route to modular endpoints
       const [u, s, r, h, st] = await Promise.all([
-        this._apiCall('/user-profile', {}, 'get', null, mockData.MOCK_USER_PROFILE),
-        this._apiCall('/stats', {}, 'get', null, mockData.MOCK_STATS),
-        this._apiCall('/recommendations', { limit: 20 }, 'get', null, mockData.MOCK_TRACKS.slice(0, 10)),
-        this._apiCall('/history', { limit: 50 }, 'get', null, mockData.MOCK_TRACKS),
-        this._apiCall('/status')
+        this._apiCall('/auth/me'),
+        this._apiCall('/music/stats'),
+        this._apiCall('/music/recommendations', { limit: 20 }),
+        this._apiCall('/music/history', { limit: 50 }),
+        this._apiCall('/music/status')
       ])
       if (u) this.userProfile = u
       if (s) this.stats = s
@@ -131,18 +142,46 @@ export const useMusicStore = defineStore('music', {
       if (st) this.isSpotifyConnected = st.connected
     },
 
-    async logTrackPlay(track: any) {
-      if (!track) return
-      const payload = {
-          spotify_id: track.spotify_id || track.id,
-          track_name: track.track_name,
-          artist: track.artist,
-          album: track.album,
-          thumbnail: track.thumbnail,
-          duration_ms: track.duration_ms
+    async connectSpotify() {
+      // Fetch the login URL and redirect
+      const data = await this._apiCall('/auth/spotify/login')
+      if (data && data.url) {
+        window.location.href = data.url
       }
-      await this._apiCall('/music/played', {}, 'post', payload)
-      const h = await this._apiCall('/history', { limit: 50 })
+    },
+
+    async syncAccount() {
+      this.isSyncing = true
+      try {
+        const res = await this._apiCall('/music/sync')
+        if (res && res.status === 'started') {
+          // Continuous orbital monitoring (Polling)
+          let isDone = false
+          while (!isDone) {
+            await new Promise(resolve => setTimeout(resolve, 3000))
+            const status = await this._apiCall('/music/sync/status')
+            if (status && status.status === 'completed') {
+              isDone = true
+            } else if (status && (status.status === 'idle' || status.status === 'error')) {
+              break
+            }
+          }
+          await this.fetchAllData()
+        } else if (res && res.status === 'success') {
+          await this.fetchAllData()
+        }
+      } catch (e) {
+        console.error("Sync failed:", e)
+      } finally {
+        this.isSyncing = false
+      }
+    },
+
+    async logTrackPlay(track: any) {
+      if (!track || !this.accessToken) return
+      const sid = track.spotify_id || track.id
+      await this._apiCall(`/music/played`, { spotify_id: sid }, 'post')
+      const h = await this._apiCall('/music/history', { limit: 50 })
       if (h) this.recentTracks = h
     },
 
@@ -220,8 +259,10 @@ export const useMusicStore = defineStore('music', {
     async search(query: string) {
       if (!query) return
       this.isLoading = true
-      const data = await this._apiCall('/search', { query }, [mockData.MOCK_TRACKS[0]])
-      if (data) this.searchResults = data
+      const data = await this._apiCall('/music/search', { q: query })
+      if (data) {
+        this.searchResults = data
+      }
       this.isLoading = false
     },
 
@@ -284,7 +325,7 @@ export const useMusicStore = defineStore('music', {
 
     async fetchPlaylists() {
       try {
-        const data = await this._apiCall('/playlists')
+        const data = await this._apiCall('/playlists/')
         if (data) this.playlists = data
       } catch (e) {
         console.error('Fetch playlists failed', e)
@@ -307,7 +348,7 @@ export const useMusicStore = defineStore('music', {
 
     async fetchFavorites() {
       try {
-        const data = await this._apiCall('/favorites')
+        const data = await this._apiCall('/music/favorites')
         if (data) this.favorites = data
       } catch (e) {
         console.error('Fetch favorites failed', e)
@@ -329,12 +370,13 @@ export const useMusicStore = defineStore('music', {
 
     async toggleFavorite(track: any) {
       try {
-        const resp = await this._apiCall('/favorites/toggle', {}, 'post', track)
-        if (resp && resp.status === 'success') {
+        const sid = track.spotify_id || track.id
+        const resp = await this._apiCall('/music/favorites/toggle', { spotify_id: sid }, 'post')
+        if (resp) {
           if (resp.is_favorite) {
             this.favorites.unshift(track)
           } else {
-            this.favorites = this.favorites.filter(t => t.spotify_id !== track.spotify_id)
+            this.favorites = this.favorites.filter((t: any) => t.spotify_id !== track.spotify_id)
           }
           return resp.is_favorite
         }
@@ -400,7 +442,7 @@ export const useMusicStore = defineStore('music', {
       if (this.isShuffle) this.shuffleQueue()
       else {
         const t = this.nowPlaying
-        this.currentIndex = this.queue.findIndex(it => it.spotify_id === t?.spotify_id)
+        this.currentIndex = this.queue.findIndex((it: any) => it.spotify_id === t?.spotify_id)
       }
       this.savePlaybackState(this.getState())
     },
@@ -425,12 +467,13 @@ export const useMusicStore = defineStore('music', {
     },
 
     async streamTrack(name: string, artist: string, id?: string) {
+      if (!this.accessToken) return // Block playback if unauthorized
       const trackId = id || name
       this.isLoadingStream = true
       
       // 1. Preload hit?
       if (this.preloadedNext && this.preloadedNext.trackId === trackId) {
-        this.streamUrl = this.preloadedNext.data.stream_url
+        this.streamUrl = this.preloadedNext.data.url // Backend uses "url"
         this.streamMeta = this.preloadedNext.data
         this.isLoadingStream = false
         this.preloadedNext = null
@@ -441,7 +484,7 @@ export const useMusicStore = defineStore('music', {
       // 2. Local session cache hit (30 min validity)
       const cached = this.streamCache.get(trackId)
       if (cached && (Date.now() - cached.timestamp < 30 * 60 * 1000)) {
-        this.streamUrl = cached.data.stream_url
+        this.streamUrl = cached.data.url
         this.streamMeta = cached.data
         this.isLoadingStream = false
         this.preloadNext()
@@ -452,7 +495,12 @@ export const useMusicStore = defineStore('music', {
       this.streamUrl = null
       const currentTrackAtStart = this.nowPlaying?.spotify_id || this.nowPlaying?.id || this.nowPlaying?.track_name
       
-      const data = await this._apiCall('/stream', { track: name, artist, spotify_id: id })
+      const params: any = {}
+      if (id) params.spotify_id = id
+      if (name) params.track_name = name
+      if (artist) params.artist = artist
+
+      const data = await this._apiCall('/music/stream', params)
       
       // Only update if we haven't switched to another track during the wait
       const currentTrackNow = this.nowPlaying?.spotify_id || this.nowPlaying?.id || this.nowPlaying?.track_name
@@ -467,7 +515,7 @@ export const useMusicStore = defineStore('music', {
 
     async preloadNext() {
       const q = this.currentQueue
-      if (!q.length || this.currentIndex === -1 || this.isPreloading) return
+      if (!q || !q.length || this.currentIndex === -1 || this.isPreloading) return
       
       const nextIdx = (this.currentIndex + 1) % q.length
       if (nextIdx === 0 && this.loopMode === 'off') return
@@ -477,9 +525,12 @@ export const useMusicStore = defineStore('music', {
       if (this.preloadedNext?.trackId === tid) return
 
       this.isPreloading = true
-      const data = await this._apiCall('/stream', { 
-        track: t.track_name, artist: t.artist || '', spotify_id: t.spotify_id || t.id 
-      })
+      const params: any = {}
+      if (t.spotify_id || t.id) params.spotify_id = t.spotify_id || t.id
+      if (t.track_name) params.track_name = t.track_name
+      if (t.artist) params.artist = t.artist
+
+      const data = await this._apiCall('/music/stream', params)
       if (data) this.preloadedNext = { trackId: tid, data }
       this.isPreloading = false
     }

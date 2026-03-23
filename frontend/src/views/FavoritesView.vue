@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, computed } from 'vue'
+import { onMounted } from 'vue'
 import { Heart, Play } from 'lucide-vue-next'
 import { useMusicStore } from '../stores/musicStore'
 import TrackRow from '../components/TrackRow.vue'
@@ -51,7 +51,7 @@ onMounted(() => {
         v-for="(track, index) in musicStore.favorites" 
         :key="track.spotify_id" 
         :track="track" 
-        :index="index + 1"
+        :index="Number(index) + 1"
         :contextQueue="musicStore.favorites"
       />
       

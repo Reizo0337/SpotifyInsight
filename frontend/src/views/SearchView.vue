@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { useMusicStore } from '../stores/musicStore'
-import { Search as SearchIcon, Loader2 } from 'lucide-vue-next'
+import { Search as SearchIcon, Loader2, Sparkles, Orbit, Radio, History, Zap, BarChart3, ChevronRight } from 'lucide-vue-next'
 import TrackRow from '../components/TrackRow.vue'
 
 const query = ref('')
@@ -15,205 +15,258 @@ watch(query, (newVal) => {
     if (newVal) musicStore.search(newVal)
   }, 500)
 })
+
+const categories = [
+  { id: 'core', name: 'Núcleo Central', icon: Orbit, color: 'var(--nebula-primary)', desc: 'Tus señales más fuertes' },
+  { id: 'puns', name: 'Pulso Galáctico', icon: Zap, color: 'var(--nebula-accent)', desc: 'Lo más escuchado ahora' },
+  { id: 'radio', name: 'Radio Telescopio', icon: Radio, color: '#f59e0b', desc: 'Emisiones infinitas' },
+  { id: 'stats', name: 'Análisis DNA', icon: BarChart3, color: '#ec4899', desc: 'Tu trayectoria estelar' }
+]
+
+const recentSignals = computed(() => musicStore.recentTracks.slice(0, 8))
 </script>
 
 <template>
-  <div class="search-view">
-    <div class="search-bar-container">
-      <div class="search-input-wrapper">
-        <SearchIcon :size="20" class="s-icon" />
+  <div class="search-nebula">
+    <header class="search-header">
+      <div class="search-oracle glass">
+        <SearchIcon :size="20" class="oracle-icon" />
         <input 
           v-model="query" 
           type="text" 
-          placeholder="¿Qué quieres escuchar?" 
+          placeholder="Rastrear señales en el cosmos..." 
           autofocus
         />
-        <Loader2 v-if="musicStore.isLoading" :size="20" class="loading-spinner" />
-      </div>
-    </div>
-
-    <div class="search-results" v-if="query">
-      <h2 v-if="musicStore.searchResults.length > 0">Resultados para "{{ query }}"</h2>
-      <div class="results-list">
-        <TrackRow 
-          v-for="track in musicStore.searchResults" 
-          :key="track.id" 
-          :track="track"
-          :contextQueue="musicStore.searchResults"
-        />
-      </div>
-      <div v-if="!musicStore.isLoading && musicStore.searchResults.length === 0" class="no-results">
-        No se encontraron resultados para "{{ query }}"
-      </div>
-    </div>
-
-    <div class="categories" v-else>
-      <div class="category-section">
-        <h2>Explorar todo</h2>
-        <div class="category-grid">
-          <div class="cat-card podcast">Podcasts</div>
-          <div class="cat-card events">Eventos</div>
-          <div class="cat-card made-for-you">Especialmente para ti</div>
-          <div class="cat-card new-releases">Nuevos lanzamientos</div>
+        <div v-if="musicStore.isLoading" class="oracle-loading">
+            <Loader2 :size="20" class="spin" />
         </div>
       </div>
+    </header>
 
-      <div class="recent-played-section" v-if="musicStore.recentTracks.length > 0">
-        <div class="section-header">
-          <h2>Canciones escuchadas recientemente</h2>
-          <span class="view-all">Ver todo</span>
+    <div v-if="query" class="results-nebula animate-in">
+        <div class="results-header">
+            <Sparkles :size="16" />
+            <span>RESULTADOS: "{{ query.toUpperCase() }}"</span>
         </div>
-        <div class="history-list">
-          <TrackRow 
-            v-for="(track, index) in musicStore.recentTracks.slice(0, 25)" 
-            :key="track.spotify_id + '_' + index" 
-            :track="track"
-            :index="index + 1"
-            :showPlayedAt="true"
-            :contextQueue="musicStore.recentTracks.slice(0, 25)"
-          />
+        
+        <div class="results-grid single-column">
+            <div class="result-section glass">
+                <div class="s-header">
+                    <Sparkles :size="18" />
+                    <h3>SEÑALES DETECTADAS</h3>
+                </div>
+                <div class="track-list-nebula">
+                    <TrackRow 
+                        v-for="track in musicStore.searchResults" 
+                        :key="track.id || track.spotify_id" 
+                        :track="track"
+                        :contextQueue="musicStore.searchResults"
+                    />
+                    <div v-if="!musicStore.isLoading && musicStore.searchResults.length === 0" class="empty-hint">Sin señales en esta frecuencia</div>
+                </div>
+            </div>
         </div>
-      </div>
     </div>
+
+    <main v-else class="explore-nebula animate-in">
+        <section class="sectors-section">
+            <h2 class="section-title">Sectores de Exploración</h2>
+            <div class="sectors-grid">
+                <div v-for="cat in categories" :key="cat.id" class="sector-card glass" :style="{ '--accent': cat.color }">
+                    <div class="sector-icon">
+                        <component :is="cat.icon" :size="28" />
+                    </div>
+                    <div class="sector-info">
+                        <span class="sector-name">{{ cat.name }}</span>
+                        <span class="sector-desc">{{ cat.desc }}</span>
+                    </div>
+                    <ChevronRight :size="16" class="sector-arrow" />
+                    <div class="sector-glow"></div>
+                </div>
+            </div>
+        </section>
+
+        <section class="recent-signals" v-if="recentSignals.length > 0">
+            <div class="section-top">
+                <div class="title-with-icon">
+                    <History :size="20" />
+                    <h2 class="section-title">Últimas Trayectorias</h2>
+                </div>
+                <button class="text-btn">EXPANDIR TODO</button>
+            </div>
+            <div class="recent-grid-nebula">
+               <TrackRow 
+                v-for="(track, index) in recentSignals" 
+                :key="track.spotify_id + index" 
+                :track="track"
+                :index="Number(index) + 1"
+                :showPlayedAt="true"
+                :contextQueue="recentSignals"
+              />
+            </div>
+        </section>
+    </main>
   </div>
 </template>
 
 <style scoped>
-.search-view {
-  padding: 20px;
+.search-nebula {
+    padding: 40px;
+    display: flex;
+    flex-direction: column;
+    gap: 48px;
+    animation: fade-up 0.8s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.search-bar-container {
-  position: sticky;
-  top: 0;
-  padding: 10px 0 24px 0;
-  background: transparent;
-  z-index: 10;
+@keyframes fade-up {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
 }
 
-.search-input-wrapper {
-  position: relative;
-  max-width: 400px;
+.search-header {
+    position: sticky;
+    top: 40px;
+    z-index: 100;
 }
 
-.s-icon {
-  position: absolute;
-  left: 12px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: var(--spotify-dark);
+.search-oracle {
+    max-width: 600px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 18px 24px;
+    border-radius: 20px;
+    box-shadow: 0 30px 60px rgba(0,0,0,0.4);
+    transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
+
+.search-oracle:focus-within {
+    transform: scale(1.02);
+    border-color: var(--nebula-primary);
+    box-shadow: 0 40px 80px rgba(99, 102, 241, 0.2);
+}
+
+.oracle-icon { color: var(--nebula-text-muted); }
 
 input {
-  width: 100%;
-  padding: 12px 12px 12px 48px;
-  border-radius: 500px;
-  border: none;
-  font-size: 0.9rem;
-  font-weight: 500;
-  background: white;
-  color: black;
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: white;
+    font-size: 1.1rem;
+    font-weight: 500;
 }
 
-input:focus {
-  outline: none;
+input:focus { outline: none; }
+input::placeholder { color: var(--nebula-text-muted); opacity: 0.5; }
+
+.oracle-loading { color: var(--nebula-primary); }
+
+.results-nebula { display: flex; flex-direction: column; gap: 32px; }
+
+.results-header {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 0.7rem; font-weight: 800; letter-spacing: 2px;
+    color: var(--nebula-primary);
+    background: rgba(99, 102, 241, 0.05);
+    padding: 8px 16px; border-radius: 500px;
+    width: fit-content;
 }
 
-.loading-spinner {
-  position: absolute;
-  right: 12px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: black;
-  animation: spin 1s linear infinite;
+.results-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 24px;
 }
 
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+.result-section { border-radius: 24px; padding: 24px; height: 100%; }
+
+.s-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 20px;
+    color: var(--nebula-text-muted);
 }
 
-.category-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 24px;
+.s-header h3 { 
+    font-size: 0.8rem; 
+    font-weight: 800; 
+    margin-bottom: 0 !important; 
+    letter-spacing: 1px; 
 }
 
-.cat-card {
-  aspect-ratio: 1;
-  border-radius: 8px;
-  padding: 16px;
-  font-weight: 700;
-  font-size: 1.4rem;
-  cursor: pointer;
-  transition: transform 0.2s;
+.track-list-nebula { display: flex; flex-direction: column; gap: 4px; }
+.empty-hint { font-size: 0.85rem; color: var(--nebula-text-muted); opacity: 0.5; text-align: center; padding: 40px; }
+
+.sectors-section { display: flex; flex-direction: column; gap: 24px; }
+.section-title { font-size: 1.8rem; font-weight: 800; letter-spacing: -1px; }
+
+.sectors-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 24px;
 }
 
-.cat-card:hover { transform: scale(1.02); }
-
-.podcast { background: #e13300; }
-.events { background: #7358ff; }
-.made-for-you { background: #1e3264; }
-.new-releases { background: #e8115b; }
-
-.no-results {
-  padding: 40px;
-  text-align: center;
-  color: var(--spotify-text-grey);
+.sector-card {
+    padding: 24px;
+    border-radius: 24px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    transition: all 0.3s;
 }
 
-.category-section {
-  margin-bottom: 40px;
+.sector-card:hover {
+    transform: translateY(-8px);
+    background: rgba(255, 255, 255, 0.06);
 }
 
-.recent-played-section {
-  margin-top: 20px;
-  padding-bottom: 100px;
+.sector-icon {
+    width: 60px; height: 60px;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.03);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--accent);
+    border: 1px solid rgba(255,255,255,0.05);
 }
 
-.section-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16px;
+.sector-info { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.sector-name { font-size: 1.1rem; font-weight: 700; color: white; }
+.sector-desc { font-size: 0.8rem; color: var(--nebula-text-muted); font-weight: 500; }
+
+.sector-arrow { opacity: 0; transform: translateX(-10px); transition: all 0.3s; color: var(--nebula-text-muted); }
+.sector-card:hover .sector-arrow { opacity: 1; transform: translateX(0); }
+
+.sector-glow {
+    position: absolute; bottom: -20px; right: -20px;
+    width: 80px; height: 80px;
+    background: var(--accent);
+    filter: blur(40px);
+    opacity: 0.1;
 }
 
-.view-all {
-  font-size: 0.8rem;
-  font-weight: 700;
-  color: var(--spotify-text-grey);
-  cursor: pointer;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-}
+.recent-signals { display: flex; flex-direction: column; gap: 24px; margin-top: 40px; }
+.section-top { display: flex; align-items: center; justify-content: space-between; }
+.title-with-icon { display: flex; align-items: center; gap: 12px; color: var(--nebula-primary); }
 
-.view-all:hover {
-  text-decoration: underline;
-  color: white;
-}
+.recent-grid-nebula { display: flex; flex-direction: column; gap: 8px; }
 
-.history-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
-h2 {
-  font-size: 1.5rem;
-  font-weight: 800;
-  margin-bottom: 20px;
-  letter-spacing: -0.02em;
+@media (max-width: 1200px) {
+    .results-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 768px) {
-  .search-view { padding: 12px; }
-  .category-grid {
-    grid-template-columns: repeat(2, 1fr);
-    gap: 12px;
-  }
-  .cat-card {
-    font-size: 1.1rem;
-    padding: 12px;
-  }
+    .search-nebula { padding: 24px; }
+    .search-oracle { padding: 14px 18px; }
+    .sectors-grid { grid-template-columns: 1fr; }
+    .section-title { font-size: 1.4rem; }
 }
 </style>

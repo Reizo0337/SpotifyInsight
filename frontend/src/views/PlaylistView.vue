@@ -1,16 +1,15 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { Library, Play, Trash2 } from 'lucide-vue-next'
+import { useRoute } from 'vue-router'
+import { Library, Play } from 'lucide-vue-next'
 import { useMusicStore } from '../stores/musicStore'
 import TrackRow from '../components/TrackRow.vue'
 
 const route = useRoute()
-const router = useRouter()
 const musicStore = useMusicStore()
 
 const playlistId = computed(() => route.params.id as string)
-const playlist = computed(() => musicStore.playlists.find(p => p.id === playlistId.value))
+const playlist = computed(() => musicStore.playlists.find((p: any) => p.id === playlistId.value))
 
 const playlistTracks = ref<any[]>([])
 const isLoading = ref(false)
@@ -87,7 +86,7 @@ watch(playlistId, () => {
         v-for="(track, index) in playlistTracks" 
         :key="track.spotify_id" 
         :track="track" 
-        :index="index + 1"
+        :index="Number(index) + 1"
         :contextQueue="playlistTracks"
       />
       

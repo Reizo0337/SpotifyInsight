@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
-import { Heart, MoreHorizontal, ListPlus, Play, ChevronRight } from 'lucide-vue-next'
+import { Heart, MoreHorizontal, ListPlus, Play, ChevronRight, Hash } from 'lucide-vue-next'
 import { useMusicStore } from '../stores/musicStore'
 
 const props = defineProps<{
@@ -16,7 +16,7 @@ const showPlaylistSubmenu = ref(false)
 const menuRef = ref<HTMLElement | null>(null)
 
 const isFavorite = computed(() => {
-  return store.favorites.some(t => t.spotify_id === props.track.spotify_id)
+  return store.favorites.some((t: any) => t.spotify_id === props.track.spotify_id)
 })
 
 const handlePlay = () => {
@@ -56,9 +56,9 @@ const formatPlayedAt = (timestamp: number) => {
   if (!timestamp) return ''
   const now = Date.now() / 1000
   const diff = now - timestamp
-  if (diff < 60) return 'Ahora mismo'
-  if (diff < 3600) return `Hace ${Math.floor(diff / 60)} min`
-  if (diff < 86400) return `Hace ${Math.floor(diff / 3600)} h`
+  if (diff < 60) return 'Ahora'
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h`
   return new Date(timestamp * 1000).toLocaleDateString()
 }
 
@@ -81,56 +81,60 @@ onUnmounted(() => window.removeEventListener('click', closeMenu))
 </script>
 
 <template>
-  <div class="track-row-2026" @click="handlePlay">
-    <div class="index-col">
-      <span class="number" v-if="index !== undefined">{{ index }}</span>
-      <div class="play-icon-row">
-        <Play :size="16" fill="white" />
-      </div>
+  <div class="track-item-nebula" @click="handlePlay">
+    <div class="column-index">
+      <span class="idx-text">{{ index }}</span>
+      <div class="play-peek"><Play :size="14" fill="currentColor" /></div>
     </div>
     
-    <div class="info-col">
-      <div class="thumb">
+    <div class="column-main">
+      <div class="track-thumb">
           <img :src="track.thumbnail && track.thumbnail !== 'Unknown' ? track.thumbnail : `https://api.dicebear.com/7.x/shapes/svg?seed=${track.track_name}`" alt="">
+          <div class="thumb-overlay"><Play :size="16" fill="white" /></div>
       </div>
-      <div class="details">
-        <span class="name">{{ track.track_name }}</span>
-        <span class="artist">{{ track.artist }}</span>
+      <div class="track-meta">
+        <span class="track-name">{{ track.track_name }}</span>
+        <span class="track-artist">{{ track.artist }}</span>
       </div>
     </div>
 
-    <div class="album-col">{{ track.album }}</div>
+    <div class="column-album">{{ track.album }}</div>
     
-    <div class="actions-col">
-      <span class="played-at" v-if="showPlayedAt && track.played_at">{{ formatPlayedAt(track.played_at) }}</span>
-      <button class="action-btn" :class="{ 'is-fav': isFavorite }" @click="toggleFavorite" :title="isFavorite ? 'Quitar de favoritos' : 'Añadir a favoritos'">
-        <Heart :size="18" :fill="isFavorite ? '#1db954' : 'none'" :stroke="isFavorite ? '#1db954' : 'currentColor'" />
+    <div class="column-actions">
+      <div v-if="showPlayedAt && track.played_at" class="played-badge">
+          <Hash :size="10" />
+          {{ formatPlayedAt(track.played_at) }}
+      </div>
+      
+      <button class="fav-btn" :class="{ 'is-fav': isFavorite }" @click="toggleFavorite">
+        <Heart :size="18" :fill="isFavorite ? 'var(--nebula-primary)' : 'none'" />
       </button>
-      <span class="duration">{{ formatTime(track.duration_ms || track.duration) }}</span>
-      <div class="menu-container" ref="menuRef">
-        <button class="action-btn opt" @click="toggleMenu" title="Más opciones">
+
+      <span class="track-time">{{ formatTime(track.duration_ms || track.duration) }}</span>
+
+      <div class="menu-anchor" ref="menuRef">
+        <button class="opt-btn" @click="toggleMenu">
           <MoreHorizontal :size="18" />
         </button>
-        <Transition name="fade">
-          <div v-if="showMenu" class="track-menu">
-            <button @click="playNext"><Play :size="14" /> Reproducir a continuación</button>
-            <button @click="addToQueue"><ListPlus :size="14" /> Añadir a la cola</button>
-            <div class="menu-divider"></div>
+        <Transition name="menu">
+          <div v-if="showMenu" class="item-menu glass">
+            <button @click="playNext"><Play :size="14" /> Procesar Siguiente</button>
+            <button @click="addToQueue"><ListPlus :size="14" /> Encolar Registro</button>
+            <div class="divider"></div>
             <button @click="toggleFavorite">
-               <Heart :size="14" :fill="isFavorite ? '#1db954' : 'none'" /> 
-               {{ isFavorite ? 'Quitar de favoritos' : 'Añadir a favoritos' }}
+               <Heart :size="14" :fill="isFavorite ? 'var(--nebula-primary)' : 'none'" /> 
+               {{ isFavorite ? 'Remover de Favoritos' : 'Sincronizar Favorito' }}
             </button>
-            <div class="submenu-trigger" @mouseenter="showPlaylistSubmenu = true">
-                <button class="has-submenu">
-                    <ListPlus :size="14" /> Añadir a playlist
-                    <ChevronRight :size="14" class="arrow" />
+            <div class="sub-trigger" @mouseenter="showPlaylistSubmenu = true">
+                <button class="has-sub">
+                    <ListPlus :size="14" /> Asignar a Colección
+                    <ChevronRight :size="14" class="arr" />
                 </button>
-                <Transition name="fade">
-                    <div v-if="showPlaylistSubmenu" class="playlist-submenu" @mouseleave="showPlaylistSubmenu = false">
+                <Transition name="menu">
+                    <div v-if="showPlaylistSubmenu" class="sub-board glass" @mouseleave="showPlaylistSubmenu = false">
                         <button v-for="pl in store.playlists" :key="pl.id" @click="addToPlaylist(pl.id)">
                             {{ pl.name }}
                         </button>
-                        <div v-if="store.playlists.length === 0" class="no-playlists">No tienes playlists</div>
                     </div>
                 </Transition>
             </div>
@@ -142,59 +146,127 @@ onUnmounted(() => window.removeEventListener('click', closeMenu))
 </template>
 
 <style scoped>
-.track-row-2026 {
+.track-item-nebula {
   display: grid;
-  grid-template-columns: 48px 4fr 3fr 140px;
-  padding: 8px 16px;
-  border-radius: 8px;
+  grid-template-columns: 40px 5fr 3fr minmax(180px, auto);
+  padding: 12px 16px;
+  border-radius: 16px;
   align-items: center;
   cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  color: var(--spotify-text-grey);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  color: var(--nebula-text-dim);
+  border: 1px solid transparent;
 }
 
-.track-row-2026:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--spotify-text-white);
+.track-item-nebula:hover {
+  background: var(--nebula-surface-hover);
+  border-color: var(--glass-border);
+  transform: scale(1.005) translateX(4px);
+  color: white;
 }
 
-.index-col {
+.column-index {
   display: flex;
   justify-content: center;
   position: relative;
-  width: 32px;
+  font-family: 'Space Mono', monospace;
+  font-size: 0.8rem;
+  opacity: 0.5;
 }
 
-.play-icon-row { display: none; color: white; }
-.track-row-2026:hover .number { display: none; }
-.track-row-2026:hover .play-icon-row { display: block; }
+.play-peek { display: none; color: var(--nebula-primary); }
+.track-item-nebula:hover .idx-text { display: none; }
+.track-item-nebula:hover .play-peek { display: flex; }
 
-.info-col { display: flex; align-items: center; gap: 12px; }
-.thumb { width: 40px; height: 40px; border-radius: 4px; overflow: hidden; background: #282828; flex-shrink: 0; }
-.thumb img { width: 100%; height: 100%; object-fit: cover; }
-.details { display: flex; flex-direction: column; overflow: hidden; }
-.name { color: white; font-weight: 500; font-size: 0.95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.artist { font-size: 0.8rem; }
-.album-col { font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.actions-col { display: flex; align-items: center; gap: 12px; justify-content: flex-end; }
-.action-btn { opacity: 0; transition: opacity 0.2s; color: var(--spotify-text-grey); }
-.track-row-2026:hover .action-btn { opacity: 1; }
-.action-btn:hover { color: white; }
-.duration { font-size: 0.8rem; min-width: 40px; text-align: right; font-variant-numeric: tabular-nums; }
-.played-at { font-size: 0.75rem; color: var(--spotify-text-grey); margin-right: 12px; white-space: nowrap; }
-.menu-container { position: relative; }
-.track-menu { position: absolute; top: 100%; right: 0; background: #282828; border-radius: 4px; box-shadow: 0 16px 24px rgba(0,0,0,0.4); padding: 4px; min-width: 220px; z-index: 100; }
-.track-menu button { width: 100%; padding: 12px; font-size: 0.85rem; color: #b3b3b3; text-align: left; border-radius: 2px; display: flex; align-items: center; gap: 12px; }
-.track-menu button:hover { background: rgba(255,255,255,0.1); color: white; }
+.column-main { display: flex; align-items: center; gap: 16px; overflow: hidden; }
 
-.menu-divider { height: 1px; background: rgba(255,255,255,0.1); margin: 4px 0; }
+.track-thumb {
+    width: 48px; height: 48px;
+    border-radius: 10px;
+    position: relative;
+    overflow: hidden;
+    background: #000;
+    flex-shrink: 0;
+    border: 1px solid var(--glass-border);
+}
+.track-thumb img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.4s; }
+.track-item-nebula:hover .track-thumb img { transform: scale(1.1); }
 
-.submenu-trigger { position: relative; }
-.has-submenu { justify-content: space-between !important; }
-.playlist-submenu { position: absolute; left: calc(100% + 4px); top: 0; background: #282828; border-radius: 4px; box-shadow: 0 16px 24px rgba(0,0,0,0.4); padding: 4px; min-width: 180px; z-index: 101; }
-.no-playlists { padding: 12px; font-size: 0.8rem; color: #727272; }
-.is-fav { opacity: 1 !important; color: var(--spotify-green) !important; }
+.thumb-overlay {
+    position: absolute; inset: 0;
+    background: rgba(0,0,0,0.4);
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0; transition: opacity 0.2s;
+}
+.track-item-nebula:hover .thumb-overlay { opacity: 1; }
 
-.fade-enter-active, .fade-leave-active { transition: opacity 0.2s, transform 0.2s; }
-.fade-enter-from, .fade-leave-to { opacity: 0; transform: scale(0.95); }
+.track-meta { display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
+.track-name { font-size: 0.95rem; font-weight: 700; color: white; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.track-artist { font-size: 0.75rem; color: var(--nebula-text-dim); }
+
+.column-album { font-size: 0.8rem; color: var(--nebula-text-muted); padding-right: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.column-actions { display: flex; align-items: center; gap: 18px; justify-content: flex-end; }
+
+.played-badge {
+    display: flex; align-items: center; gap: 4px;
+    background: rgba(99, 102, 241, 0.1);
+    color: var(--nebula-primary);
+    padding: 4px 10px; border-radius: 500px;
+    font-size: 0.65rem; font-weight: 800;
+}
+
+.fav-btn {
+    color: var(--nebula-text-muted);
+    transition: all 0.2s;
+    opacity: 0.4;
+}
+.track-item-nebula:hover .fav-btn { opacity: 1; }
+.fav-btn.is-fav { color: var(--nebula-primary); opacity: 1; filter: drop-shadow(0 0 5px var(--nebula-primary)); }
+.fav-btn:hover { transform: scale(1.2); color: white; }
+
+.track-time { font-size: 0.8rem; font-weight: 600; opacity: 0.6; min-width: 45px; text-align: right; font-variant-numeric: tabular-nums; }
+
+.menu-anchor { position: relative; }
+.opt-btn { color: var(--nebula-text-muted); opacity: 0; transition: opacity 0.2s; }
+.track-item-nebula:hover .opt-btn { opacity: 1; }
+.opt-btn:hover { color: white; }
+
+.item-menu {
+    position: absolute; top: calc(100% + 10px); right: 0;
+    padding: 8px; border-radius: 16px;
+    min-width: 260px; z-index: 1000;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.6);
+}
+.item-menu button {
+    width: 100%; padding: 12px 14px;
+    font-size: 0.85rem; font-weight: 600;
+    color: var(--nebula-text-dim);
+    display: flex; align-items: center; gap: 12px;
+    border-radius: 10px; transition: all 0.2s;
+}
+.item-menu button:hover { background: var(--nebula-surface-hover); color: white; }
+
+.divider { height: 1px; background: var(--glass-border); margin: 6px 0; }
+
+.sub-trigger { position: relative; }
+.has-sub { justify-content: space-between !important; }
+.sub-board {
+    position: absolute; left: calc(-100% - 12px); top: 0;
+    padding: 8px; border-radius: 16px;
+    min-width: 200px; z-index: 1001;
+}
+
+.menu-enter-active, .menu-leave-active { transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+.menu-enter-from, .menu-leave-to { opacity: 0; transform: translateY(8px) scale(0.95); }
+
+@media (max-width: 900px) {
+    .column-album { display: none; }
+    .track-item-nebula { grid-template-columns: 40px 1fr auto; }
+}
+
+@media (max-width: 600px) {
+    .track-item-nebula { padding: 8px; border-radius: 12px; }
+    .column-index, .track-time, .played-badge { display: none; }
+}
 </style>

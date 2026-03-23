@@ -14,7 +14,9 @@ const musicStore = useMusicStore()
 const router = useRouter()
 
 onMounted(async () => {
-  await musicStore.fetchAllData()
+  if (musicStore.accessToken) {
+    await musicStore.fetchAllData()
+  }
 })
 
 const handleSync = async () => {
@@ -25,38 +27,48 @@ const userHistory = computed(() => musicStore.recentTracks)
 </script>
 
 <template>
-  <div class="home-2026">
+  <div class="home-nebula">
     <header class="cinematic-hero">
-      <div class="mesh-glow"></div>
+      <!-- Ambient Glow Blobs -->
+      <div class="blob b1"></div>
+      <div class="blob b2"></div>
+      
       <div class="hero-content">
         <div class="status-badge">
             <Sparkles :size="14" />
-            <span>AI ANALYSIS ACTIVE</span>
+            <span>SISTEMA NEBULA ACTIVO</span>
         </div>
-        <h1 class="greeting">Hola, {{ musicStore.userProfile?.user_name || 'Insighter' }}</h1>
+        <h1 class="greeting">Bienvenido, {{ musicStore.userProfile?.username || 'Viajero' }}</h1>
         <p class="summary">
-          Bienvenido a Spotify Insights. Hemos procesado <span class="highlight">{{ musicStore.stats?.total_tracks || '0' }} canciones</span> con algoritmos DSP.
+          Tu universo musical está listo. Hemos analizado <span class="highlight">{{ musicStore.stats?.total_tracks || '0' }} señales</span> únicas en tu trayectoria estelar.
         </p>
         
 
         <div class="hero-actions">
-          <button @click="handleSync" class="btn-glass primary" :disabled="musicStore.isSyncing">
+          <button v-if="!musicStore.isSpotifyConnected" @click="musicStore.connectSpotify" class="btn-nebula primary">
+            <Sparkles :size="20" />
+            <span>Conectar Spotify</span>
+          </button>
+          <button v-else @click="handleSync" class="btn-nebula primary" :disabled="musicStore.isSyncing">
             <Play v-if="!musicStore.isSyncing" :size="20" fill="currentColor" />
             <RefreshCcw v-else :class="{ 'spinning': musicStore.isSyncing }" :size="20" />
-            <span>{{ musicStore.isSyncing ? 'Analizando...' : 'Play Insights' }}</span>
+            <span>{{ musicStore.isSyncing ? 'Analizando...' : 'Sincronizar Spotify' }}</span>
           </button>
-          <button @click="router.push('/stats')" class="btn-glass secondary">
+          <button @click="router.push('/stats')" class="btn-nebula secondary">
             <BarChart3 :size="20" />
-            <span>Explorar DNA</span>
+            <span>Ver Análisis DNA</span>
           </button>
         </div>
       </div>
 
       <div class="hero-visual">
-          <div class="orbit-container">
-              <div class="orbit ring-1"></div>
-              <div class="orbit ring-2"></div>
-              <div class="orbit ring-3"></div>
+          <div class="core-nebula">
+              <div class="core-glow"></div>
+              <div class="core-rings">
+                  <div class="ring r1"></div>
+                  <div class="ring r2"></div>
+                  <div class="ring r3"></div>
+              </div>
           </div>
       </div>
     </header>
@@ -64,9 +76,9 @@ const userHistory = computed(() => musicStore.recentTracks)
     <main class="dashboard-grid">
         <section class="dna-section">
           <div class="section-top">
-            <h2 class="section-title">Tu DNA Musical</h2>
+            <h2 class="section-title">Tu Biometría Musical</h2>
             <button class="text-btn" @click="router.push('/stats')">
-                Ver todo <ChevronRight :size="16" />
+                Ver Detalles <ChevronRight :size="16" />
             </button>
           </div>
           <div class="stats-carousel">
@@ -75,55 +87,61 @@ const userHistory = computed(() => musicStore.recentTracks)
               :value="Math.round((musicStore.stats?.avg_energy || 0) * 100) + '%'"
               :percent="(musicStore.stats?.avg_energy || 0) * 100"
               :icon="Zap"
-              color="#ffe100"
+              color="var(--nebula-primary)"
             />
             <StatCard
               title="Ritmo"
               :value="Math.round((musicStore.stats?.avg_danceability || 0) * 100) + '%'"
               :percent="(musicStore.stats?.avg_danceability || 0) * 100"
               :icon="Activity"
-              color="#1565FF"
+              color="var(--nebula-accent)"
             />
             <StatCard
               title="Vibe"
               :value="Math.round((musicStore.stats?.avg_valence || 0) * 100) + '%'"
               :percent="(musicStore.stats?.avg_valence || 0) * 100"
               :icon="Wind"
-              color="#00d4ff"
+              color="#818cf8"
             />
           </div>
         </section>
 
         <div class="split-content">
-          <section class="tracks-card">
+          <section class="tracks-card glass">
             <div class="card-header">
-              <h3>Descubrimiento IA</h3>
-              <span class="tag">NEW RELEASES</span>
+              <h3>Sugerencias Estelares</h3>
+              <span class="tag">NEBULA AI</span>
             </div>
             <div class="track-container">
               <TrackRow 
                 v-for="(track, index) in musicStore.recommendations.slice(0, 6)" 
                 :key="track.spotify_id" 
                 :track="track" 
-                :index="index + 1"
+                :index="Number(index) + 1"
                 :contextQueue="musicStore.recommendations.slice(0, 6)"
               />
+              <div v-if="musicStore.recommendations.length === 0" class="empty-state">
+                Inicia la sincronización para recibir sugerencias
+              </div>
             </div>
           </section>
 
-          <section class="tracks-card">
+          <section class="tracks-card glass">
             <div class="card-header">
-              <h3>Actividad Reciente</h3>
+              <h3>Trayectoria Reciente</h3>
               <span class="tag">REAL TIME</span>
             </div>
             <div class="track-container">
               <TrackRow 
-                v-for="(track, index) in userHistory.slice(0, 10)" 
+                v-for="(track, index) in userHistory.slice(0, 6)" 
                 :key="track.spotify_id + index" 
                 :track="track" 
-                :index="index + 1"
+                :index="Number(index) + 1"
                 :contextQueue="userHistory.slice(0, 6)"
               />
+              <div v-if="userHistory.length === 0" class="empty-state">
+                No hay actividad reciente detectada
+              </div>
             </div>
           </section>
         </div>
@@ -132,358 +150,212 @@ const userHistory = computed(() => musicStore.recentTracks)
 </template>
 
 <style scoped>
-.home-2026 {
+.home-nebula {
   display: flex;
   flex-direction: column;
   padding: 40px;
-  gap: 48px;
-  animation: fade-in 0.8s ease-out;
+  gap: 60px;
+  animation: fade-in 1s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 @keyframes fade-in {
-    from { opacity: 0; transform: translateY(20px); }
+    from { opacity: 0; transform: translateY(30px); }
     to { opacity: 1; transform: translateY(0); }
 }
 
 .cinematic-hero {
   position: relative;
-  min-height: 400px;
+  min-height: 460px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 60px;
-  background: rgba(255, 255, 255, 0.02);
-  border-radius: 32px;
+  padding: 60px 80px;
+  background: var(--nebula-surface);
+  border-radius: 40px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: 0 40px 100px rgba(0,0,0,0.4);
 }
 
-.mesh-glow {
+/* Hero Blobs */
+.blob {
     position: absolute;
-    top: -50%; left: -50%;
-    width: 200%; height: 200%;
-    background: radial-gradient(circle at center, rgba(21, 101, 255, 0.1) 0%, transparent 50%);
-    animation: rotate 20s linear infinite;
+    width: 300px;
+    height: 300px;
+    border-radius: 50%;
+    filter: blur(100px);
+    opacity: 0.15;
+    z-index: 1;
 }
-
-@keyframes rotate {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-}
+.b1 { background: var(--nebula-primary); top: -100px; left: -100px; }
+.b2 { background: var(--nebula-accent); bottom: -100px; right: -100px; }
 
 .hero-content {
   position: relative;
   z-index: 10;
-  max-width: 600px;
+  max-width: 650px;
 }
 
 .status-badge {
     display: flex;
     align-items: center;
     gap: 8px;
-    background: rgba(21, 101, 255, 0.1);
-    color: var(--spotify-neon);
-    padding: 6px 16px;
-    border-radius: 100px;
+    background: rgba(99, 102, 241, 0.1);
+    color: var(--nebula-primary);
+    padding: 10px 20px;
+    border-radius: 500px;
     font-size: 0.7rem;
     font-weight: 800;
-    letter-spacing: 1px;
-    margin-bottom: 24px;
+    letter-spacing: 2px;
+    margin-bottom: 32px;
     width: fit-content;
-    border: 1px solid rgba(21, 101, 255, 0.2);
+    border: 1px solid rgba(99, 102, 241, 0.2);
+    box-shadow: 0 0 20px rgba(99, 102, 241, 0.1);
 }
 
 .greeting {
   font-size: 4.5rem;
-  margin-bottom: 16px;
-  background: linear-gradient(to bottom, #fff, #888);
+  font-weight: 800;
+  letter-spacing: -3px;
+  margin-bottom: 20px;
+  background: linear-gradient(135deg, #fff 0%, #a5b4fc 100%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
+  line-height: 1.1;
 }
 
 .summary {
   font-size: 1.25rem;
-  color: var(--spotify-text-grey);
+  color: var(--nebula-text-dim);
   line-height: 1.6;
-  margin-bottom: 40px;
+  margin-bottom: 48px;
+  font-weight: 300;
 }
 
 .highlight {
     color: white;
-    font-weight: 700;
+    font-weight: 600;
+    text-shadow: 0 0 15px rgba(255,255,255,0.3);
 }
 
-.hero-actions {
-  display: flex;
-  gap: 20px;
+.btn-nebula {
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: none;
 }
 
-.btn-glass {
-    padding: 16px 32px;
-    border-radius: 16px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    font-weight: 700;
-    font-size: 1rem;
-    backdrop-filter: blur(10px);
-}
-
-.btn-glass.primary {
+.btn-nebula.primary {
     background: white;
     color: black;
+    box-shadow: 0 20px 40px rgba(255, 255, 255, 0.1);
 }
 
-.btn-glass.primary:hover {
-    background: var(--spotify-neon);
-    transform: scale(1.05) translateY(-2px);
-}
-
-.btn-glass.secondary {
-    background: rgba(255, 255, 255, 0.05);
+.btn-nebula.primary:hover {
+    background: var(--nebula-primary);
     color: white;
+    transform: translateY(-4px) scale(1.02);
+    box-shadow: 0 20px 40px rgba(99, 102, 241, 0.3);
+}
+
+.btn-nebula.secondary {
     border: 1px solid rgba(255, 255, 255, 0.1);
+    color: white;
+    background: rgba(255, 255, 255, 0.02);
 }
 
-.btn-glass.secondary:hover {
-    background: rgba(255, 255, 255, 0.1);
-    transform: translateY(-2px);
+.btn-nebula.secondary:hover {
+    background: rgba(255, 255, 255, 0.06);
+    transform: translateY(-4px);
 }
 
-/* Hero Visual Orbit */
+/* Cinematic Visual */
 .hero-visual {
+    width: 400px;
+    height: 400px;
     position: relative;
-    width: 300px;
-    height: 300px;
     display: flex;
     align-items: center;
     justify-content: center;
+    perspective: 1000px;
 }
 
-.orbit-container {
+.core-nebula {
+    width: 120px;
+    height: 120px;
     position: relative;
-    width: 100%; height: 100%;
 }
 
-.orbit {
+.core-glow {
+    position: absolute;
+    width: 100%; height: 100%;
+    background: radial-gradient(circle, var(--nebula-primary), var(--nebula-accent));
+    filter: blur(40px);
+    opacity: 0.6;
+    animation: core-breath 4s ease-in-out infinite;
+}
+
+.ring {
     position: absolute;
     top: 50%; left: 50%;
-    transform: translate(-50%, -50%);
-    border: 1px solid rgba(255,255,255,0.05);
+    transform-style: preserve-3d;
+    border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 50%;
+    animation: rotate-ring 10s linear infinite;
 }
 
-.ring-1 { width: 100%; height: 100%; animation: pulse-glow 4s infinite; }
-.ring-2 { width: 70%; height: 70%; border-color: rgba(21, 101, 255, 0.2); }
-.ring-3 { width: 40%; height: 40%; background: radial-gradient(circle, var(--spotify-green), transparent); filter: blur(40px); opacity: 0.2; }
+.r1 { width: 300px; height: 300px; margin-top: -150px; margin-left: -150px; animation-duration: 25s; }
+.r2 { width: 400px; height: 120px; margin-top: -60px; margin-left: -200px; animation-duration: 15s; border-color: rgba(34, 211, 238, 0.2); }
+.r3 { width: 150px; height: 400px; margin-top: -200px; margin-left: -75px; animation-duration: 40s; border-color: rgba(99, 102, 241, 0.1); }
+
+@keyframes core-breath {
+    0%, 100% { transform: scale(1); opacity: 0.6; }
+    50% { transform: scale(1.2); opacity: 0.8; }
+}
+
+@keyframes rotate-ring {
+    from { transform: rotateX(60deg) rotateZ(0deg); }
+    to { transform: rotateX(60deg) rotateZ(360deg); }
+}
 
 .dashboard-grid {
     display: flex;
     flex-direction: column;
-    gap: 48px;
-}
-
-.section-top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 24px;
+    gap: 60px;
 }
 
 .section-title {
     font-size: 2rem;
-}
-
-.text-btn {
-    color: var(--spotify-text-grey);
-    font-weight: 700;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-}
-
-.text-btn:hover { color: white; }
-
-.stats-carousel {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-    gap: 24px;
+    font-weight: 800;
+    letter-spacing: -1px;
 }
 
 .split-content {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 32px;
+    gap: 40px;
 }
 
-.tracks-card {
-    background: rgba(255, 255, 255, 0.02);
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    border-radius: 24px;
-    padding: 32px;
-}
+.spinning { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
-.card-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 24px;
-}
-
-.tag {
-    font-size: 0.6rem;
-    font-weight: 900;
-    letter-spacing: 1px;
-    color: var(--spotify-text-grey);
-    border: 1px solid rgba(255,255,255,0.1);
-    padding: 4px 8px;
-    border-radius: 4px;
-}
-
-.track-container {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.spinning {
-    animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-    to { transform: rotate(360deg); }
-}
-
-/* Inlined TrackRow styles */
-.track-row-2026 {
-  display: grid;
-  grid-template-columns: 48px 4fr 3fr 140px;
-  padding: 12px 16px;
-  border-radius: 12px;
-  align-items: center;
-  cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  color: var(--spotify-text-grey);
-  border: 1px solid transparent;
-}
-
-.track-row-2026:hover {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--spotify-text-white);
-  border-color: rgba(255, 255, 255, 0.05);
-  transform: translateX(4px);
-}
-
-.track-row-2026:hover .number { display: none; }
-.track-row-2026:hover .play-icon { display: block; }
-
-.index-col {
-  display: flex;
-  justify-content: center;
-  font-weight: 600;
-  font-size: 0.9rem;
-}
-
-.play-icon { display: none; color: white; }
-
-.info-col {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.thumb {
-  width: 44px;
-  height: 44px;
-  border-radius: 8px;
-  overflow: hidden;
-  background: var(--spotify-light-grey);
-}
-
-.thumb img {
-    width: 100%; height: 100%;
-}
-
-.details {
-  display: flex;
-  flex-direction: column;
-}
-
-.name {
-  color: var(--spotify-text-white);
-  font-weight: 700;
-  font-size: 1rem;
-  letter-spacing: -0.01em;
-}
-
-.artist {
-  font-size: 0.85rem;
-  font-weight: 500;
-}
-
-.album-col {
-  font-size: 0.85rem;
-  font-weight: 500;
-}
-
-.actions-col {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  justify-content: flex-end;
-}
-
-.action-btn {
-  opacity: 0;
-  transition: opacity 0.2s;
-  color: var(--spotify-text-grey);
-}
-
-.track-row-2026:hover .action-btn {
-  opacity: 1;
-}
-
-.action-btn:hover {
-    color: white;
-}
-
-.opt { margin-left: 4px; }
-
-.duration {
-  font-size: 0.85rem;
-  font-weight: 600;
-  width: 45px;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
+@media (max-width: 1400px) {
+    .greeting { font-size: 3.5rem; }
+    .hero-visual { width: 300px; height: 300px; }
 }
 
 @media (max-width: 1200px) {
     .split-content { grid-template-columns: 1fr; }
-    .greeting { font-size: 3rem; }
-    .cinematic-hero { flex-direction: column; text-align: center; padding: 40px; }
-    .hero-visual { display: none; }
+    .cinematic-hero { flex-direction: column; text-align: center; padding: 60px 40px; }
+    .hero-visual { margin-top: 40px; }
     .hero-actions { justify-content: center; }
     .status-badge { margin-left: auto; margin-right: auto; }
 }
 
 @media (max-width: 768px) {
-    .home-2026 { padding: 20px; gap: 32px; }
-    .greeting { font-size: 2.5rem; }
-    .cinematic-hero { padding: 32px 20px; border-radius: 0; border: none; }
-    .hero-actions { flex-direction: column; width: 100%; }
-    .btn-glass { width: 100%; justify-content: center; }
-    
-    .track-row-2026 {
-        grid-template-columns: 44px 1fr 60px;
-        padding: 8px;
-    }
-    .album-col, .number { display: none; }
-    .name { font-size: 0.9rem; }
-    .artist { font-size: 0.75rem; }
-    
-    .stats-carousel {
-        grid-template-columns: 1fr;
-    }
+    .home-nebula { padding: 24px; }
+    .greeting { font-size: 2.8rem; }
+    .hero-actions { flex-direction: column; }
+    .btn-nebula { width: 100%; justify-content: center; }
 }
 </style>

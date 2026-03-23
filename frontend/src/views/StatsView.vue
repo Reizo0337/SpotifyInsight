@@ -60,10 +60,10 @@ const getRankIcon = (index: number) => {
       <section class="stat-section">
         <h2><Mic2 :size="20" /> Top 10 Artistas</h2>
         <div class="ranking-list">
-          <div v-for="(count, artist, i) in musicStore.stats?.top_artists" :key="artist" class="rank-item" :class="'rank-' + ((i || 0) + 1)">
+          <div v-for="(count, artist, i) in musicStore.stats?.top_artists" :key="artist" class="rank-item" :class="'rank-' + (Number(i) + 1)">
             <div class="rank-info">
-              <span class="rank-number">{{ (i || 0) + 1 }}</span>
-              <component :is="getRankIcon(Number(i) || 0)" v-if="Number(i) < 3" :size="18" :color="getTrophyColor(Number(i) || 0)" class="trophy" />
+              <span class="rank-number">{{ Number(i) + 1 }}</span>
+              <component :is="getRankIcon(Number(i))" v-if="Number(i) < 3" :size="18" :color="getTrophyColor(Number(i))" class="trophy" />
               <span class="item-name">{{ artist }}</span>
             </div>
             <span class="item-meta">{{ count }} reproducciones</span>
@@ -74,10 +74,10 @@ const getRankIcon = (index: number) => {
       <section class="stat-section">
         <h2><Radio :size="20" /> Top 10 Géneros</h2>
         <div class="ranking-list" v-if="musicStore.stats?.top_genres">
-          <div v-for="(percent, name, i) in musicStore.stats.top_genres" :key="name" class="rank-item" :class="'rank-' + ((i || 0) + 1)">
+          <div v-for="(percent, name, i) in musicStore.stats.top_genres" :key="name" class="rank-item" :class="'rank-' + (Number(i) + 1)">
             <div class="rank-info">
-              <span class="rank-number">{{ (i || 0) + 1 }}</span>
-              <component :is="getRankIcon(Number(i) || 0)" v-if="Number(i) < 3" :size="18" :color="getTrophyColor(Number(i) || 0)" class="trophy" />
+              <span class="rank-number">{{ Number(i) + 1 }}</span>
+              <component :is="getRankIcon(Number(i))" v-if="Number(i) < 3" :size="18" :color="getTrophyColor(Number(i))" class="trophy" />
               <span class="item-name">{{ name }}</span>
             </div>
             <span class="item-meta">{{ percent }}% afinidad</span>

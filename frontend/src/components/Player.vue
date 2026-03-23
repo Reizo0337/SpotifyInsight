@@ -9,6 +9,8 @@ import { useMusicStore } from '../stores/musicStore'
 
 const musicStore = useMusicStore()
 const audioRef = ref<HTMLAudioElement | null>(null)
+const progressTrackRef = ref<HTMLElement | null>(null)
+const volTrackRef = ref<HTMLElement | null>(null)
 
 // UI State
 const isPlaying = ref(false)
@@ -58,14 +60,11 @@ const tryPlay = async () => {
     musicStore.isPlaying = true
     musicStore.shouldAutoResume = false
   } catch (err) {
-    console.warn('Autoplay blocked or interuppted:', err)
+    console.warn('Playback blocked:', err)
     isPlaying.value = false
-    // Don't flip musicStore.isPlaying to false immediately, 
-    // maybe user will click something else.
   }
 }
 
-// Trigger auto-resume from reload or external play request
 watch(() => musicStore.isPlaying, (shouldPlay) => {
   if (shouldPlay && !isPlaying.value) {
     tryPlay()
@@ -88,7 +87,6 @@ watch(streamMeta, (meta) => {
   if (meta?.duration) duration.value = meta.duration
 })
 
-// Log playback to backend when track changes and starts playing
 watch(nowPlaying, (track) => {
   if (track) {
     musicStore.logTrackPlay(track)
@@ -125,7 +123,6 @@ const onCanPlay = () => {
   if (!a) return
 
   if (!hasResumed.value) {
-    // Only resume time if it's the same track
     const savedState = JSON.parse(localStorage.getItem('m-playback-state') || '{}')
     const currentId = musicStore.nowPlaying?.spotify_id || musicStore.nowPlaying?.id
     
@@ -135,13 +132,11 @@ const onCanPlay = () => {
         a.currentTime = savedTime
       }
     } else {
-      // Clear time for new track
       localStorage.setItem('m-time', '0')
     }
     hasResumed.value = true
   }
 
-  // If we intended to play, do it now that it's buffered
   if (musicStore.isPlaying || musicStore.shouldAutoResume) {
     tryPlay()
   }
@@ -157,6 +152,13 @@ const onEnded = () => {
 }
 
 // Interaction logic
+const handleInstantSeek = (e: MouseEvent) => {
+  updateSeek(e)
+  if (audioRef.value && duration.value) {
+    audioRef.value.currentTime = (displayProgress.value / 100) * duration.value
+  }
+}
+
 const startSeek = (e: MouseEvent) => {
   isDraggingProgress.value = true
   updateSeek(e)
@@ -165,7 +167,7 @@ const startSeek = (e: MouseEvent) => {
 }
 
 const updateSeek = (e: MouseEvent) => {
-  const bar = document.querySelector('.progress-container') as HTMLElement
+  const bar = progressTrackRef.value
   if (!bar || !duration.value) return
   const rect = bar.getBoundingClientRect()
   const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
@@ -190,7 +192,7 @@ const startVol = (e: MouseEvent) => {
 }
 
 const updateVol = (e: MouseEvent) => {
-  const bar = document.querySelector('.volume-slider') as HTMLElement
+  const bar = volTrackRef.value
   if (!bar) return
   const rect = bar.getBoundingClientRect()
   const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
@@ -235,7 +237,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <footer class="player-2026">
+  <footer class="player-nebula">
     <audio 
       ref="audioRef" 
       @timeupdate="onTimeUpdate" 
@@ -245,82 +247,93 @@ onUnmounted(() => {
       crossorigin="anonymous"
     />
 
-    <div class="player-wrapper">
-      <div class="mini-progress-top">
-        <div class="mini-fill" :style="{ width: displayProgress + '%' }"></div>
+    <div class="player-container glass">
+      <div class="glow-indicator" :class="{ 'active': isPlaying }"></div>
+      
+      <div class="track-zone">
+        <div class="art-box" :class="{ 'playing': isPlaying, 'loading': streamLoading }">
+          <img :src="nowPlaying?.thumbnail || `https://api.dicebear.com/7.x/shapes/svg?seed=${nowPlaying?.track_name}`" alt="">
+          <div v-if="streamLoading" class="loader-overlay"><Loader2 :size="18" class="spin" /></div>
+        </div>
+        <div class="meta-box">
+          <div class="title-scroller">
+            <span class="track-name">{{ nowPlaying?.track_name || 'NEBULA CORE' }}</span>
+          </div>
+          <span class="artist-name">{{ nowPlaying?.artist || 'Ready for Signal' }}</span>
+        </div>
       </div>
 
-      <div class="track-info">
-        <div class="album-art" :class="{ 'playing': isPlaying, 'loading': streamLoading }">
-          <img :src="nowPlaying?.thumbnail || `https://api.dicebear.com/7.x/identicon/svg?seed=${nowPlaying?.track_name}`" alt="">
-          <div class="art-glow"></div>
-          <div v-if="streamLoading" class="art-loading"><Loader2 :size="20" class="spin" /></div>
-        </div>
-        <div class="track-details">
-          <span class="title">{{ nowPlaying?.track_name || 'Sin reproducción' }}</span>
-          <span class="artist">{{ nowPlaying?.artist || 'Inicia una canción' }}</span>
-        </div>
-      </div>
-
-      <div class="controls-section">
-        <div class="main-buttons">
-          <button class="btn-icon secondary" :class="{ active: isShuffle }" @click="musicStore.toggleShuffle"><Shuffle :size="18" /></button>
-          <button class="btn-icon secondary" @click="musicStore.playPrevious"><SkipBack :size="20" fill="currentColor" /></button>
-          <button @click="togglePlay" class="play-btn" :disabled="streamLoading && !streamUrl">
-            <Loader2 v-if="streamLoading && !isPlaying" :size="22" class="spin" />
-            <component v-else :is="isPlaying ? Pause : Play" :size="22" fill="black" />
+      <div class="commands-zone">
+        <div class="button-row">
+          <button class="icon-btn secondary" :class="{ active: isShuffle }" @click="musicStore.toggleShuffle" title="Shuffle"><Shuffle :size="16" /></button>
+          <button class="icon-btn" @click="musicStore.playPrevious" title="Prev"><SkipBack :size="20" fill="currentColor" /></button>
+          
+          <button @click="togglePlay" class="play-trigger" :disabled="streamLoading && !streamUrl">
+            <Loader2 v-if="streamLoading && !isPlaying" :size="24" class="spin" />
+            <component v-else :is="isPlaying ? Pause : Play" :size="24" fill="white" />
           </button>
-          <button class="btn-icon secondary" @click="musicStore.playNext"><SkipForward :size="20" fill="currentColor" /></button>
-          <button class="btn-icon secondary" :class="{ active: loopMode !== 'off' }" @click="musicStore.toggleLoop">
-            <Repeat :size="18" />
-            <span v-if="loopMode === 'one'" class="loop-one-indicator">1</span>
+
+          <button class="icon-btn" @click="musicStore.playNext" title="Next"><SkipForward :size="20" fill="currentColor" /></button>
+          <button class="icon-btn secondary" :class="{ active: loopMode !== 'off' }" @click="musicStore.toggleLoop" title="Loop">
+            <Repeat :size="16" />
+            <span v-if="loopMode === 'one'" class="one-badge">1</span>
           </button>
         </div>
 
-        <div class="playback-bar">
-          <span class="time">{{ formatTime(currentTime) }}</span>
-          <div class="progress-container" @mousedown="startSeek">
-            <div class="progress-bg">
-              <div class="progress-fill" :style="{ width: displayProgress + '%' }"><div class="progress-knob"></div></div>
+        <div class="timeline-row">
+          <span class="timestamp">{{ formatTime(currentTime) }}</span>
+          <div class="progress-track" ref="progressTrackRef" @mousedown="startSeek" @click="handleInstantSeek">
+            <div class="progress-bar">
+              <div class="progress-fill" :style="{ width: displayProgress + '%' }">
+                  <div class="handle"></div>
+              </div>
             </div>
           </div>
-          <span class="time">{{ formatTime(duration) }}</span>
+          <span class="timestamp">{{ formatTime(duration) }}</span>
         </div>
       </div>
 
-      <div class="extra-controls">
-        <button class="btn-icon speed-btn" @click="cycleRate">{{ playbackRate }}x</button>
-        <button class="btn-icon" @click="isQueueVisible = !isQueueVisible" :class="{ active: isQueueVisible }"><ListMusic :size="18" /></button>
-        <button class="btn-icon"><MonitorSpeaker :size="18" /></button>
-        <div class="volume-group">
-          <button class="btn-icon" @click="toggleMute">
+      <div class="utilities-zone">
+        <button class="speed-label" @click="cycleRate">{{ playbackRate }}x</button>
+        <button class="icon-btn" @click="isQueueVisible = !isQueueVisible" :class="{ active: isQueueVisible }"><ListMusic :size="18" /></button>
+        
+        <div class="volume-control">
+          <button class="icon-btn vol-icon" @click="toggleMute">
             <VolumeX v-if="isMuted || volume === 0" :size="18" />
             <Volume2 v-else :size="18" />
           </button>
-          <div class="volume-slider" @mousedown="startVol">
-            <div class="volume-fill" :style="{ width: (isMuted ? 0 : volume * 100) + '%' }"></div>
+          <div class="vol-track" ref="volTrackRef" @mousedown="startVol">
+             <div class="vol-bar">
+                <div class="vol-fill" :style="{ width: (isMuted ? 0 : volume * 100) + '%' }"></div>
+             </div>
           </div>
         </div>
       </div>
+
+      <!-- Live Stream Line Interface Decor -->
+       <div class="stream-line">
+           <div class="line-fill" :class="{ animate: isPlaying }"></div>
+       </div>
     </div>
 
-    <!-- Queue Overlay -->
-    <Transition name="slide-up">
-      <div v-if="isQueueVisible" class="queue-overlay">
-        <div class="queue-header">
-          <h3>Siguiente en la cola</h3>
-          <button @click="isQueueVisible = false">×</button>
+    <!-- Terminal Queue Interface -->
+    <Transition name="queue-pop">
+      <div v-if="isQueueVisible" class="queue-board glass">
+        <div class="board-header">
+          <div class="header-title">COLA DE PROCESAMIENTO</div>
+          <button class="close-board" @click="isQueueVisible = false">×</button>
         </div>
-        <div class="queue-list custom-scrollbar">
-          <div v-for="(t, i) in currentQueue" :key="i" class="queue-item" :class="{ current: i === currentIndex }" @click="musicStore._changeTrack(i)">
-            <div class="q-thumb">
-              <img :src="t.thumbnail || `https://api.dicebear.com/7.x/shapes/svg?seed=${t.track_name}`" alt="">
-              <div v-if="i === currentIndex && isPlaying" class="playing-overlay"><Loader2 :size="14" class="spin" /></div>
+        <div class="board-list custom-scrollbar">
+          <div v-for="(t, i) in currentQueue" :key="i" 
+               class="board-item" 
+               :class="{ active: i === currentIndex }" 
+               @click="musicStore._changeTrack(i)">
+            <div class="item-id">{{ Number(i) + 1 }}</div>
+            <div class="item-main">
+                <span class="i-name">{{ t.track_name }}</span>
+                <span class="i-artist">{{ t.artist }}</span>
             </div>
-            <div class="q-info">
-              <span class="q-name">{{ t.track_name }}</span>
-              <span class="q-artist">{{ t.artist }}</span>
-            </div>
+            <div v-if="i === currentIndex && isPlaying" class="pulse-icon"></div>
           </div>
         </div>
       </div>
@@ -329,137 +342,185 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.player-2026 { grid-area: player; padding-bottom: 16px; position: relative; }
-.player-wrapper {
-  background: rgba(18, 18, 18, 0.8);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  margin: 0 16px;
-  border-radius: 20px;
-  height: 90px;
+.player-nebula {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 112px;
+  padding: 0 16px 16px 16px;
+  z-index: 9999;
+  background: linear-gradient(to top, var(--nebula-bg) 80%, transparent);
+}
+
+.player-container {
+  height: 96px;
+  border-radius: 24px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 24px;
-  box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+  padding: 0 32px;
   position: relative;
   overflow: hidden;
+  box-shadow: 0 30px 60px rgba(0,0,0,0.6);
 }
-.mini-progress-top { position: absolute; top: 0; left: 0; right: 0; height: 2px; background: rgba(255,255,255,0.05); }
-.mini-fill { height: 100%; background: var(--spotify-neon); transition: width 0.2s linear; }
-.track-info { display: flex; align-items: center; gap: 12px; width: 300px; }
-.album-art { width: 52px; height: 52px; border-radius: 8px; position: relative; flex-shrink: 0; }
-.album-art img { width: 100%; height: 100%; border-radius: 8px; object-fit: cover; }
-.art-glow { position: absolute; inset: 0; background: var(--spotify-green); filter: blur(15px); opacity: 0; transition: opacity 0.4s; }
-.playing .art-glow { opacity: 0.3; }
-.art-loading { position: absolute; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; border-radius: 8px; }
-.track-details { display: flex; flex-direction: column; overflow: hidden; }
-.title { font-size: 0.9rem; font-weight: 700; color: white; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.artist { font-size: 0.75rem; color: var(--spotify-text-grey); }
-.controls-section { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; }
-.main-buttons { display: flex; align-items: center; gap: 20px; }
-.play-btn { width: 38px; height: 38px; background: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: black; transition: transform 0.2s; }
-.play-btn:hover { transform: scale(1.08); }
-.btn-icon { color: var(--spotify-text-grey); padding: 4px; transition: color 0.2s; }
-.btn-icon:hover { color: white; }
-.btn-icon.active { color: var(--spotify-green); }
-.playback-bar { width: 100%; max-width: 500px; display: flex; align-items: center; gap: 12px; }
-.time { font-size: 0.7rem; color: var(--spotify-text-grey); min-width: 35px; font-variant-numeric: tabular-nums; }
-.progress-container { flex: 1; height: 12px; display: flex; align-items: center; cursor: pointer; }
-.progress-bg { width: 100%; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; position: relative; }
-.progress-fill { height: 100%; background: white; border-radius: 2px; position: relative; }
-.progress-knob { position: absolute; right: -6px; top: 50%; transform: translateY(-50%); width: 12px; height: 12px; background: white; border-radius: 50%; opacity: 0; transition: opacity 0.1s; box-shadow: 0 2px 4px rgba(0,0,0,0.3); }
-.progress-container:hover .progress-knob { opacity: 1; }
-.progress-container:hover .progress-fill { background: var(--spotify-green); }
-.extra-controls { width: 300px; display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
-.volume-group { display: flex; align-items: center; gap: 8px; }
-.volume-slider { width: 80px; height: 12px; position: relative; display: flex; align-items: center; cursor: pointer; }
-.volume-slider::before { content: ''; position: absolute; width: 100%; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; }
-.volume-fill { height: 4px; background: white; border-radius: 2px; min-width: 4px; }
-.volume-group:hover .volume-fill { background: var(--spotify-green); }
+
+.glow-indicator {
+    position: absolute;
+    top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--nebula-primary), transparent);
+    opacity: 0;
+    transition: opacity 0.5s;
+}
+.glow-indicator.active { opacity: 1; box-shadow: 0 0 15px var(--nebula-primary); }
+
+.track-zone { display: flex; align-items: center; gap: 16px; width: 320px; }
+
+.art-box {
+    width: 60px; height: 60px;
+    border-radius: 12px;
+    position: relative;
+    overflow: hidden;
+    border: 1px solid var(--glass-border);
+}
+.art-box img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.5s; }
+.playing .art-box img { transform: scale(1.1); }
+
+.loader-overlay {
+    position: absolute; inset: 0;
+    background: rgba(0,0,0,0.5);
+    display: flex; align-items: center; justify-content: center;
+}
+
+.meta-box { flex: 1; overflow: hidden; display: flex; flex-direction: column; gap: 2px; }
+.track-name { font-size: 0.95rem; font-weight: 700; color: white; white-space: nowrap; }
+.artist-name { font-size: 0.75rem; color: var(--nebula-text-dim); }
+
+.commands-zone { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+
+.button-row { display: flex; align-items: center; gap: 24px; }
+
+.play-trigger {
+    width: 44px; height: 44px;
+    background: var(--nebula-primary);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    box-shadow: 0 8px 16px rgba(99, 102, 241, 0.3);
+}
+.play-trigger:hover { transform: scale(1.1); box-shadow: 0 12px 24px rgba(99, 102, 241, 0.5); }
+.play-trigger:disabled { opacity: 0.5; cursor: default; }
+
+.icon-btn { color: var(--nebula-text-dim); transition: all 0.2s; }
+.icon-btn:hover { color: white; transform: scale(1.1); }
+.icon-btn.secondary { color: var(--nebula-text-muted); opacity: 0.6; }
+.icon-btn.active { color: var(--nebula-primary); opacity: 1; filter: drop-shadow(0 0 5px var(--nebula-primary)); }
+
+.timeline-row { width: 100%; max-width: 560px; display: flex; align-items: center; gap: 14px; }
+.timestamp { font-size: 0.7rem; color: var(--nebula-text-muted); min-width: 35px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.progress-track { flex: 1; height: 20px; display: flex; align-items: center; cursor: pointer; }
+.progress-bar { width: 100%; height: 4px; background: rgba(255,255,255,0.06); border-radius: 4px; position: relative; }
+.progress-fill { height: 100%; background: var(--nebula-primary); border-radius: 4px; position: relative; }
+.handle {
+    position: absolute; right: -7px; top: 50%; transform: translateY(-50%);
+    width: 14px; height: 14px; background: white; border-radius: 50%;
+    opacity: 0; transition: opacity 0.2s;
+    box-shadow: 0 0 10px var(--nebula-primary);
+}
+.progress-track:hover .handle { opacity: 1; }
+.progress-track:hover .progress-bar { height: 6px; }
+
+.utilities-zone { width: 320px; display: flex; align-items: center; justify-content: flex-end; gap: 16px; }
+
+.speed-label {
+    font-size: 0.65rem; font-weight: 800;
+    color: var(--nebula-text-muted);
+    background: rgba(255,255,255,0.05);
+    padding: 3px 8px; border-radius: 6px;
+    border: 1px solid var(--glass-border);
+}
+
+.volume-control { display: flex; align-items: center; gap: 10px; }
+.vol-track { width: 90px; height: 16px; display: flex; align-items: center; cursor: pointer; }
+.vol-bar { width: 100%; height: 3px; background: rgba(255,255,255,0.06); border-radius: 2px; }
+.vol-fill { height: 100%; background: var(--nebula-text-muted); border-radius: 2px; }
+.volume-control:hover .vol-fill { background: var(--nebula-accent); box-shadow: 0 0 8px var(--nebula-accent); }
+
+.stream-line {
+    position: absolute; bottom: 0; left: 0; right: 0; height: 2px;
+    background: transparent; overflow: hidden;
+}
+.line-fill {
+    width: 100%; height: 100%;
+    background: linear-gradient(90deg, transparent, var(--nebula-accent), transparent);
+    transform: translateX(-100%);
+}
+.line-fill.animate { animation: scan 3s linear infinite; }
+
+@keyframes scan {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+}
+
+.one-badge {
+    position: absolute; top: 0; right: 0; font-size: 0.6rem; 
+    font-weight: 900; background: var(--nebula-primary); color: white;
+    width: 12px; height: 12px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+}
+
+/* Queue Styles */
+.queue-board {
+    position: absolute; bottom: 110px; right: 16px;
+    width: 320px; max-height: 440px;
+    border-radius: 20px; padding: 20px;
+    display: flex; flex-direction: column; gap: 16px;
+    box-shadow: 0 30px 60px rgba(0,0,0,0.8);
+}
+.board-header { display: flex; align-items: center; justify-content: space-between; }
+.header-title { font-size: 0.7rem; font-weight: 800; letter-spacing: 2px; color: var(--nebula-primary); }
+.close-board { color: var(--nebula-text-muted); font-size: 1.2rem; }
+
+.board-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding-right: 4px; }
+.board-item {
+    display: flex; align-items: center; gap: 12px; padding: 10px;
+    border-radius: 12px; cursor: pointer; transition: all 0.2s;
+    border: 1px solid transparent;
+}
+.board-item:hover { background: var(--nebula-surface-hover); border-color: var(--glass-border); }
+.board-item.active { background: rgba(99, 102, 241, 0.1); border-color: rgba(99,102,241,0.3); }
+
+.item-id { font-size: 0.7rem; font-weight: 800; color: var(--nebula-text-muted); width: 16px; }
+.item-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.i-name { font-size: 0.85rem; font-weight: 600; color: white; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.i-artist { font-size: 0.7rem; color: var(--nebula-text-muted); }
+
+.pulse-icon {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--nebula-accent);
+    box-shadow: 0 0 10px var(--nebula-accent);
+    animation: core-breath 1s ease-in-out infinite;
+}
+
+.queue-pop-enter-active, .queue-pop-leave-active { transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.queue-pop-enter-from, .queue-pop-leave-to { opacity: 0; transform: translateY(20px) scale(0.9); }
+
 .spin { animation: spin 1s linear infinite; }
-@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-.loop-one-indicator { position: absolute; top: -2px; right: -4px; background: var(--spotify-green); color: black; font-size: 0.6rem; font-weight: 900; width: 12px; height: 12px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
-.speed-btn { font-size: 0.7rem; font-weight: 800; background: rgba(255,255,255,0.05); border-radius: 4px; padding: 2px 6px; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
-/* ─── Queue Variables ──────────────────────────────── */
+@media (max-width: 1024px) {
+    .track-zone, .utilities-zone { width: 220px; }
+    .timeline-row { max-width: 400px; }
+}
 
-.queue-overlay { position: absolute; bottom: 100px; right: 16px; width: 300px; max-height: 400px; background: rgba(24, 24, 24, 0.9); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; box-shadow: 0 20px 40px rgba(0,0,0,0.6); display: flex; flex-direction: column; overflow: hidden; }
-.queue-header { padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.05); }
-.queue-header h3 { margin: 0; font-size: 0.85rem; color: var(--primary-blue); text-transform: uppercase; letter-spacing: 0.05em; }
-.queue-list { flex: 1; overflow-y: auto; padding: 8px; }
-.queue-item { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 6px; cursor: pointer; transition: background 0.2s; }
-.queue-item:hover { background: rgba(33, 101, 255, 0.15); }
-.queue-item.current { background: rgba(33, 101, 255, 0.25); border: 1px solid rgba(33, 101, 255, 0.3); }
-.q-thumb { width: 32px; height: 32px; border-radius: 4px; position: relative; overflow: hidden; }
-.q-thumb img { width: 100%; height: 100%; object-fit: cover; }
-.playing-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; color: var(--primary-blue); }
-.q-info { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-.q-name { font-size: 0.8rem; font-weight: 600; color: white; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.q-artist { font-size: 0.7rem; color: var(--spotify-text-grey); }
-.slide-up-enter-active, .slide-up-leave-active { transition: all 0.3s ease; }
-.slide-up-enter-from, .slide-up-leave-to { opacity: 0; transform: translateY(10px); }
-
-/* ─── Mobile ─────────────────────────────────────── */
 @media (max-width: 768px) {
-  .player-2026 {
-    position: fixed;
-    bottom: 64px;
-    left: 0;
-    right: 0;
-    padding: 8px 12px;
-    background: transparent;
-  }
-
-  .player-wrapper {
-    margin: 0;
-    border-radius: 16px;
-    height: 76px;
-    padding: 0 16px;
-    background: rgba(20, 20, 20, 0.9);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    box-shadow: 0 8px 32px rgba(0,0,0,0.6), 0 0 0 1px rgba(21,101,255,0.1);
-  }
-
-  .extra-controls, .playback-bar, .btn-icon.secondary {
-    display: none;
-  }
-
-  .track-info {
-    width: auto;
-    flex: 1;
-  }
-
-  .album-art {
-    width: 48px;
-    height: 48px;
-  }
-
-  .title { font-size: 0.85rem; }
-  .artist { font-size: 0.72rem; }
-
-  .controls-section {
-    width: auto;
-    flex-direction: row;
-    max-width: none;
-    gap: 0;
-    justify-content: flex-end;
-  }
-
-  .main-buttons {
-    gap: 12px;
-  }
-
-  .play-btn {
-    width: 38px;
-    height: 38px;
-  }
-
-  .queue-overlay {
-      width: calc(100% - 32px);
-      bottom: 90px;
-      right: 16px;
-  }
+    .player-nebula { position: fixed; bottom: 0; left: 0; right: 0; padding: 12px; }
+    .player-container { height: 80px; padding: 0 16px; border-radius: 16px; }
+    .utilities-zone, .timeline-row, .icon-btn.secondary { display: none; }
+    .track-zone { width: auto; flex: 1; }
+    .commands-zone { flex: 0; }
+    .button-row { gap: 16px; }
+    .play-trigger { width: 40px; height: 40px; }
 }
 </style>

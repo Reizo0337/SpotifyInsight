@@ -8,34 +8,32 @@ class SpotifyService:
     _last_429_time = 0
     _429_COOLDOWN = 60 # Seconds to stay frozen after a 429
 
-    def __init__(self):
+    def __init__(self, token_info: dict = None):
         self.sp = None
-        self.user_name = "Guest"
-        self.user_id = "local_user"
+        self.user_name = "Invitado"
+        self.user_id = "local_nebula"
         
-        # Immediate return if we are in global cooldown
-        if "ALL" in self._forbidden_endpoints:
-            if time.time() - self._last_429_time < self._429_COOLDOWN:
-                return
-            else:
-                self._forbidden_endpoints.remove("ALL")
-
-        try:
-            # We try to get the client but we NEVER make a network call here
-            self.sp = get_spotify_client()
-            if self.sp:
-                # Fetch user profile immediately
-                user = self._call_api("me")
-                if user:
-                    self.user_name = user.get("display_name", "Spotify User")
-                    self.user_id = user.get("id", "local_user")
-        except Exception as e:
-            Logger.warning("SPOTIFY", f"Auth client failed: {e}")
-            self.sp = None
+        if token_info:
+            # Multi-user path: Use stored JWT/Spotify tokens
+            from ..core.spotify_auth import get_spotify_client_from_token
+            try:
+                self.sp = get_spotify_client_from_token(token_info)
+                if self.sp:
+                    me = self._call_api("me")
+                    if me:
+                        self.user_name = me.get("display_name", "Viajero Nebula")
+                        self.user_id = me.get("id", "spotify_linked")
+            except:
+                self.sp = None
+        else:
+            # Legacy/Single user path (Env Vars)
+            from ..core.spotify_auth import get_spotify_client
+            try:
+                self.sp = get_spotify_client()
+            except: pass
 
     def is_connected(self):
-        # We consider it "connected" only if we have a client AND we aren't in cooldown
-        return self.sp is not None and "ALL" not in self._forbidden_endpoints
+        return self.sp is not None
 
     def get_user_profile(self):
         return {"user_name": self.user_name, "user_id": self.user_id}
@@ -83,6 +81,34 @@ class SpotifyService:
             res = self._call_api("tracks", batch)
             if res and "tracks" in res:
                 all_tracks.extend(res["tracks"])
+        return all_tracks
+
+    def sync_user_library(self):
+        """Fetches the actual Liked Songs from the user's Spotify library."""
+        if not self.sp: return []
+        
+        Logger.info("SPOTIFY", f"Syncing library for {self.user_name}...")
+        all_tracks = []
+        try:
+            results = self._call_api("current_user_saved_tracks", limit=50)
+            while results:
+                for item in results.get('items', []):
+                    t = item.get('track')
+                    if t:
+                        all_tracks.append({
+                            "id": t["id"],
+                            "name": t["name"],
+                            "artists": t.get("artists", []),
+                            "album": t.get("album", {})
+                        })
+                
+                if results.get('next'):
+                    results = self._call_api("next", results)
+                else:
+                    results = None
+        except Exception as e:
+            Logger.error("SPOTIFY", f"Library sync failed partially: {e}")
+            
         return all_tracks
 
     def get_top_tracks_with_features(self, limit=50):
