@@ -55,18 +55,21 @@ async def sync_data():
 
 @router.get("/recommendations", response_model=List[TrackFeatures])
 async def get_recommendations(limit: int = 10, mode: str = "vibe", song: Optional[str] = None):
-    """Hybrid recommendation engine."""
+    """Hybrid recommendation engine with Spotify seeds and temporal weighting."""
     sp = SpotifyService()
     lib_df = DataService.load_library()
     user_df = DataService.load_user_data(sp.user_id)
     
-    # Discovery mode (Spotify-led)
-    if mode == "discovery" and sp.is_connected():
-        seed_ids = user_df["spotify_id"].sample(min(5, len(user_df))).tolist() if not user_df.empty else []
-        recs = sp.get_recommendations_from_spotify(seed_ids, limit=limit)
-        if recs: return recs
+    spotify_recs = []
+    
+    # 1. Try to get seeds from recent history for Spotify engine
+    if sp.is_connected() and not user_df.empty:
+        # Get last 5 unique track IDs from history as seeds
+        recent_ids = user_df.sort_values("played_at", ascending=False)["spotify_id"].unique()[:5].tolist()
+        if recent_ids:
+            spotify_recs = sp.get_recommendations_from_spotify(seed_tracks=recent_ids, limit=limit * 2)
 
-    # Vibe mode (Local-led content matching)
+    # 2. Vibe mode (Local-led content matching) or discovery
     target_profile = None
     if song:
         target_track = await _prepare_target_track(song, sp, lib_df)
@@ -74,9 +77,15 @@ async def get_recommendations(limit: int = 10, mode: str = "vibe", song: Optiona
             target_profile = pd.DataFrame([target_track["target_features"]])
 
     if lib_df.empty: 
+        if spotify_recs: return spotify_recs[:limit]
         raise HTTPException(status_code=404, detail="Library empty.")
         
-    return RecommendationService.get_recommendations(lib_df, user_profile_tracks=target_profile if target_profile is not None else user_df, n_recommendations=limit)
+    return RecommendationService.get_recommendations(
+        lib_df, 
+        user_profile_tracks=target_profile if target_profile is not None else user_df, 
+        n_recommendations=limit,
+        spotify_candidates=spotify_recs
+    )
 
 async def _prepare_target_track(query: str, sp: SpotifyService, lib_df: pd.DataFrame):
     """Finds and enriches a track for seeds."""
@@ -170,17 +179,43 @@ async def get_stats():
 
 @router.get("/history")
 async def get_history(limit: int = 100):
-    """User history with full metadata join."""
+    """User history with full metadata join, sorted by played_at."""
     sp = SpotifyService()
     df = DataService.load_user_data(sp.user_id)
     if df.empty: return []
     
-    # Sort by time if exists, or return tail
-    return df.tail(limit).fillna({
+    # Sort by played_at if available
+    if "played_at" in df.columns:
+        df = df.sort_values("played_at", ascending=False)
+    
+    return df.head(limit).fillna({
         "popularity": 50,
         "genre": "Pop",
         "thumbnail": None
     }).replace({np.nan: None, np.inf: 0, -np.inf: 0}).to_dict(orient="records")
+
+@router.post("/api/music/played")
+async def log_played(request: Request):
+    """Logs a track played in the application."""
+    data = await request.json()
+    if not data.get("spotify_id") and not data.get("track_name"):
+        raise HTTPException(400, "Missing track identifier")
+    
+    sp = SpotifyService()
+    # Enrich with more data if it's a simple play event
+    track_metadata = {
+        "spotify_id": data.get("spotify_id"),
+        "track_name": data.get("track_name"),
+        "artist": data.get("artist"),
+        "album": data.get("album"),
+        "thumbnail": data.get("thumbnail"),
+        "duration_ms": data.get("duration_ms", 0),
+        "played_at": time.time()
+    }
+    
+    # Use DataService to log and potentially analyze
+    DataService.log_track_play(track_metadata, user_id=sp.user_id, user_name=sp.user_name)
+    return {"status": "success"}
 
 # Simple memory cache for resolved streams to avoid yt-dlp overhead
 # Key: spotify_id or track_name+artist, Value: (data, expiry)

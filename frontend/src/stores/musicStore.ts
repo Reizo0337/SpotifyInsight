@@ -74,11 +74,13 @@ export const useMusicStore = defineStore('music', {
   },
 
   actions: {
-    // Utility for API calls with mock support
-    async _apiCall(endpoint: string, params = {}, mock?: any) {
+    async _apiCall(endpoint: string, params = {}, mock?: any, method = 'get', body?: any) {
       if (MOCK_MODE && mock !== undefined) return mock
       try {
-        const { data } = await axios.get(`${API_BASE}${endpoint}`, { params })
+        const config = { params }
+        const { data } = method === 'post' 
+          ? await axios.post(`${API_BASE}${endpoint}`, body, config)
+          : await axios.get(`${API_BASE}${endpoint}`, config)
         return data
       } catch (err) {
         console.error(`API Error [${endpoint}]:`, err)
@@ -105,8 +107,8 @@ export const useMusicStore = defineStore('music', {
       const [u, s, r, h, st] = await Promise.all([
         this._apiCall('/user-profile', {}, mockData.MOCK_USER_PROFILE),
         this._apiCall('/stats', {}, mockData.MOCK_STATS),
-        this._apiCall('/recommendations', { mode: 'discovery', limit: 20 }, mockData.MOCK_TRACKS.slice(0, 10)),
-        this._apiCall('/history', {}, mockData.MOCK_TRACKS),
+        this._apiCall('/recommendations', { limit: 20 }, mockData.MOCK_TRACKS.slice(0, 10)),
+        this._apiCall('/history', { limit: 50 }, mockData.MOCK_TRACKS),
         this._apiCall('/status')
       ])
       if (u) this.userProfile = u
@@ -114,6 +116,23 @@ export const useMusicStore = defineStore('music', {
       if (r) this.recommendations = r
       if (h) this.recentTracks = h
       if (st) this.isSpotifyConnected = st.connected
+    },
+
+    async logTrackPlay(track: any) {
+      if (!track) return
+      // Prevent internal IDs (like "0") from being sent if possible
+      const payload = {
+          spotify_id: track.spotify_id || track.id,
+          track_name: track.track_name,
+          artist: track.artist,
+          album: track.album,
+          thumbnail: track.thumbnail,
+          duration_ms: track.duration_ms
+      }
+      await this._apiCall('/music/played', {}, undefined, 'post', payload)
+      // Refresh history silently
+      const h = await this._apiCall('/history', { limit: 50 })
+      if (h) this.recentTracks = h
     },
 
     // Persistence

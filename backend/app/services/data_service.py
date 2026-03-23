@@ -142,7 +142,7 @@ class DataService:
         if not truly_new_tracks.empty:
             cls._enrich_and_save(truly_new_tracks)
         
-        # Metadata check for existing tracks: if they have "Unknown" thumbnail or 0 duration, update them
+        # Metadata check for existing tracks
         remaining_mask = new_df["spotify_id"].isin(cls._cache["ids"])
         existing_updates = new_df[remaining_mask]
         
@@ -154,19 +154,15 @@ class DataService:
                 idx_mask = lib_df["spotify_id"] == sid
                 if idx_mask.any():
                     existing_row = lib_df.loc[idx_mask].iloc[0]
-                    # If existing has no thumbnail but new has one, update
                     if (existing_row.get("thumbnail") in [None, "Unknown", ""]) and row.get("thumbnail"):
                         lib_df.loc[idx_mask, "thumbnail"] = row["thumbnail"]
                         updated = True
-                    # If existing has 0 duration but new has one, update
                     if (existing_row.get("duration_ms", 0) == 0) and row.get("duration_ms", 0) > 0:
                         lib_df.loc[idx_mask, "duration_ms"] = row["duration_ms"]
                         updated = True
-                    # If existing has 0 popularity but new has one, update
                     if (existing_row.get("popularity", 0) == 0) and row.get("popularity", 0) > 0:
                         lib_df.loc[idx_mask, "popularity"] = int(row["popularity"])
                         updated = True
-                    # If existing has "Unknown" genre but new has one, update
                     if (existing_row.get("genre") == "Unknown") and row.get("genre") != "Unknown":
                         lib_df.loc[idx_mask, "genre"] = row["genre"]
                         updated = True
@@ -178,6 +174,11 @@ class DataService:
         
         Logger.time("DATA", "Append tracks completed", t_start)
         return cls.load_user_data(user_id).tail(100)
+
+    @classmethod
+    def log_track_play(cls, track_metadata: dict, user_id="Unknown", user_name="DefaultUser"):
+        """Logs a single track play event with full metadata enrichment."""
+        cls.append_new_tracks([track_metadata], user_name=user_name, user_id=user_id)
 
     @classmethod
     def update_track_metadata(cls, spotify_id: str, metadata: dict, track_name: str = "Unknown", artist: str = "Unknown"):
@@ -250,14 +251,27 @@ class DataService:
 
     @staticmethod
     def _update_history(new_df: pd.DataFrame, user_id, user_name):
-        hist_df = pd.read_csv(USER_TRACKS_PATH) if USER_TRACKS_PATH.exists() else pd.DataFrame(columns=["user_id", "user_name", "spotify_id", "track_name"])
+        """Updates user history CSV, allowing duplicates and adding timestamps."""
+        cols = ["user_id", "user_name", "spotify_id", "track_name", "played_at"]
+        hist_df = pd.read_csv(USER_TRACKS_PATH) if USER_TRACKS_PATH.exists() else pd.DataFrame(columns=cols)
         
-        uid = str(user_id)
-        existing_ids = set(hist_df[hist_df["user_id"].astype(str) == uid]["spotify_id"].astype(str))
+        # Ensure played_at exists in historical data
+        if "played_at" not in hist_df.columns:
+            hist_df["played_at"] = time.time()
         
-        to_add = new_df[~new_df["spotify_id"].astype(str).isin(existing_ids)].copy()
-        if not to_add.empty:
-            to_add["user_id"] = user_id
-            to_add["user_name"] = user_name
-            updated = pd.concat([hist_df, to_add[["user_id", "user_name", "spotify_id", "track_name"]]]).reset_index(drop=True)
-            updated.to_csv(USER_TRACKS_PATH, index=False)
+        to_add = new_df.copy()
+        to_add["user_id"] = user_id
+        to_add["user_name"] = user_name
+        
+        if "played_at" not in to_add.columns:
+            to_add["played_at"] = time.time()
+            
+        # Ensure all required columns exist in the dataframe to add
+        for col in cols:
+            if col not in to_add.columns:
+                to_add[col] = "Unknown"
+            
+        updated = pd.concat([hist_df, to_add[cols]]).reset_index(drop=True)
+        # Limit history to last 5000 tracks to avoid massive CSVs
+        updated = updated.tail(5000)
+        updated.to_csv(USER_TRACKS_PATH, index=False)

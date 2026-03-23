@@ -12,45 +12,52 @@ class RecommendationService:
     ]
 
     @classmethod
-    def get_recommendations(cls, df, user_profile_tracks=None, n_recommendations=10):
-        """Generates hybrid recommendations based on user taste profile."""
+    def get_recommendations(cls, df, user_profile_tracks=None, n_recommendations=10, spotify_candidates=None):
+        """Generates hybrid recommendations with temporal weighting and Spotify candidate merging."""
         start_time = time.time()
         
         if df.empty or len(df) < 2:
-            Logger.info("REC", f"Insufficient data: df empty={df.empty}, len={len(df)}")
-            return []
+            return spotify_candidates[:n_recommendations] if spotify_candidates else []
             
-        # 1. Filter for analyzed tracks
+        # 1. Prepare candidates
         analyzed_df = df[df["energy"] != 0].copy()
-        if len(analyzed_df) < 5:
-            Logger.info("REC", "Not enough analyzed tracks, using popularity fallback")
-            recs = df.sort_values("popularity", ascending=False).head(n_recommendations)
-            return recs.replace({np.nan: None}).to_dict(orient="records")
-
-        # 2. Performance Sampling for massive libraries
-        if len(analyzed_df) > 500000:
-            analyzed_df = pd.concat([
-                analyzed_df.tail(20000), 
-                analyzed_df.head(len(analyzed_df)-20000).sample(n=480000)
-            ])
-
-        # 3. Feature Matrix Preparation
-        X = cls._prepare_feature_matrix(analyzed_df)
         
-        # 4. User Profile Building
+        # 2. Add temporal weighting (favor more recent additions)
+        if "played_at" in analyzed_df.columns:
+            # Scale from 1.0 (newest) to 0.7 (oldest)
+            max_t = analyzed_df["played_at"].max()
+            min_t = analyzed_df["played_at"].min()
+            if max_t > min_t:
+                analyzed_df["temp_weight"] = 0.7 + 0.3 * (analyzed_df["played_at"] - min_t) / (max_t - min_t)
+            else:
+                analyzed_df["temp_weight"] = 1.0
+        else:
+            analyzed_df["temp_weight"] = 1.0
+
+        # 3. Feature Matrix and User Profile
+        X = cls._prepare_feature_matrix(analyzed_df)
         user_profile = cls._build_user_profile(X, user_profile_tracks)
         
-        # 5. Similarity Computation
-        t_sim = time.time()
+        # 4. Similarity Computation
         similarities = cosine_similarity(user_profile, X).flatten()
+        # Apply temporal weight
+        similarities = similarities * analyzed_df["temp_weight"].values
         
-        # 6. Ranking and Cleanup
+        # 5. Ranking
         indices = np.argsort(similarities)[::-1]
-        recs = analyzed_df.iloc[indices].head(n_recommendations + 30)
-        recs = recs.drop_duplicates(subset=["track_name", "artist"]).head(n_recommendations)
+        local_recs = analyzed_df.iloc[indices].head(n_recommendations * 2)
         
-        result = recs.replace({np.nan: None}).to_dict(orient="records")
-        Logger.time("REC", "Recommendations generated", start_time)
+        # 6. Hybrid Merge
+        if spotify_candidates:
+            # Merge and de-duplicate
+            combined = pd.concat([pd.DataFrame(spotify_candidates), local_recs]).drop_duplicates(subset=["spotify_id"])
+            # Re-rank combined by similarity if possible, else just interleave
+            final_recs = combined.head(n_recommendations)
+        else:
+            final_recs = local_recs.head(n_recommendations)
+            
+        result = final_recs.replace({np.nan: None}).to_dict(orient="records")
+        Logger.time("REC", f"Hybrid recommendations generated ({'Spotify' if spotify_candidates else 'Local'} led)", start_time)
         return result
 
     @classmethod

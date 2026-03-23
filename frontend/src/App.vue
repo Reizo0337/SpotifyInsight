@@ -7,7 +7,10 @@ import { RouterView, RouterLink } from 'vue-router'
 import { useMusicStore } from './stores/musicStore'
 import { Home, Search, Layers } from 'lucide-vue-next'
 
+import { useRouter } from 'vue-router'
+
 const musicStore = useMusicStore()
+const router = useRouter()
 const isElectron = !!(window as any).electronAPI
 
 onMounted(() => {
@@ -16,6 +19,9 @@ onMounted(() => {
   if (isElectron) {
     document.body.classList.add('is-electron')
   }
+  
+  // Ensure we start at Explorar
+  router.push('/')
 })
 </script>
 
@@ -23,13 +29,6 @@ onMounted(() => {
   <TitleBar v-if="isElectron" />
   <Sidebar />
   <main class="main-content">
-    <div class="top-bar">
-      <div></div>
-      <div class="user-pill">
-        <span>{{ musicStore.userProfile?.user_name || 'Spotify User' }}</span>
-        <div class="avatar">{{ musicStore.userProfile?.user_name?.charAt(0) || 'S' }}</div>
-      </div>
-    </div>
     <div class="view-container">
       <RouterView />
     </div>
@@ -56,7 +55,7 @@ onMounted(() => {
 <style>
 /* Global-ish styles to fix Electron layout */
 body.is-electron #app {
-  padding-top: 40px !important; /* Titlebar height + some margin */
+  padding-top: 64px !important; /* New TitleBar height + extra breath */
 }
 </style>
 
@@ -98,44 +97,7 @@ body.is-electron #app {
   color: white;
 }
 
-.top-bar {
-    height: 64px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 16px;
-    position: sticky;
-    top: 0;
-    z-index: 50;
-    background: transparent;
-}
 
-@media (max-width: 768px) {
-  .top-bar {
-    display: none;
-  }
-}
-
-.user-pill {
-    background: rgba(0,0,0,0.7);
-    padding: 2px 2px 2px 12px;
-    border-radius: 32px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 0.8rem;
-    font-weight: 700;
-}
-
-.avatar {
-    width: 28px;
-    height: 28px;
-    background: #535353;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
 
 .view-container {
     padding: 0 16px;

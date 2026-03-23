@@ -118,7 +118,7 @@ const userHistory = computed(() => musicStore.recentTracks)
             </div>
             <div class="track-container">
               <TrackRow 
-                v-for="(track, index) in userHistory.slice(0, 6)" 
+                v-for="(track, index) in userHistory.slice(0, 10)" 
                 :key="track.spotify_id + index" 
                 :track="track" 
                 :index="index + 1"

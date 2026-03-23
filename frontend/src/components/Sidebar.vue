@@ -135,6 +135,7 @@ const musicStore = useMusicStore()
     }
     .nav-item {
         justify-content: center;
+        align-items: center;
         padding: 12px;
         width: 48px;
         height: 48px;
@@ -251,11 +252,20 @@ const musicStore = useMusicStore()
     font-weight: 600;
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     position: relative;
+    line-height: normal;
 }
 
 .nav-item:hover {
     color: white;
     background: rgba(255,255,255,0.05);
+}
+
+.icon-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
 }
 
 .nav-item.router-link-active {

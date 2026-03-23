@@ -48,12 +48,31 @@ watch(query, (newVal) => {
     </div>
 
     <div class="categories" v-else>
-      <h2>Explorar todo</h2>
-      <div class="category-grid">
-        <div class="cat-card podcast">Podcasts</div>
-        <div class="cat-card events">Eventos</div>
-        <div class="cat-card made-for-you">Especialmente para ti</div>
-        <div class="cat-card new-releases">Nuevos lanzamientos</div>
+      <div class="category-section">
+        <h2>Explorar todo</h2>
+        <div class="category-grid">
+          <div class="cat-card podcast">Podcasts</div>
+          <div class="cat-card events">Eventos</div>
+          <div class="cat-card made-for-you">Especialmente para ti</div>
+          <div class="cat-card new-releases">Nuevos lanzamientos</div>
+        </div>
+      </div>
+
+      <div class="recent-played-section" v-if="musicStore.recentTracks.length > 0">
+        <div class="section-header">
+          <h2>Canciones escuchadas recientemente</h2>
+          <span class="view-all">Ver todo</span>
+        </div>
+        <div class="history-list">
+          <TrackRow 
+            v-for="(track, index) in musicStore.recentTracks.slice(0, 25)" 
+            :key="track.spotify_id + '_' + index" 
+            :track="track"
+            :index="index + 1"
+            :showPlayedAt="true"
+            :contextQueue="musicStore.recentTracks.slice(0, 25)"
+          />
+        </div>
       </div>
     </div>
   </div>
@@ -141,6 +160,49 @@ input:focus {
   padding: 40px;
   text-align: center;
   color: var(--spotify-text-grey);
+}
+
+.category-section {
+  margin-bottom: 40px;
+}
+
+.recent-played-section {
+  margin-top: 20px;
+  padding-bottom: 100px;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.view-all {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--spotify-text-grey);
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.view-all:hover {
+  text-decoration: underline;
+  color: white;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+h2 {
+  font-size: 1.5rem;
+  font-weight: 800;
+  margin-bottom: 20px;
+  letter-spacing: -0.02em;
 }
 
 @media (max-width: 768px) {

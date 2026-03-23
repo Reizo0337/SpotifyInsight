@@ -88,6 +88,13 @@ watch(streamMeta, (meta) => {
   if (meta?.duration) duration.value = meta.duration
 })
 
+// Log playback to backend when track changes and starts playing
+watch(nowPlaying, (track) => {
+  if (track) {
+    musicStore.logTrackPlay(track)
+  }
+}, { immediate: true })
+
 // Handlers
 const togglePlay = () => {
   const a = audioRef.value

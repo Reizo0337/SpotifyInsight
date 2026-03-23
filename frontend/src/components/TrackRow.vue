@@ -7,6 +7,7 @@ const props = defineProps<{
   track: any
   index?: number
   contextQueue?: any[]
+  showPlayedAt?: boolean
 }>()
 
 const store = useMusicStore()
@@ -33,6 +34,16 @@ const formatTime = (ms: number) => {
   const m = Math.floor(secs / 60)
   const s = Math.floor(secs % 60).toString().padStart(2, '0')
   return `${m}:${s}`
+}
+
+const formatPlayedAt = (timestamp: number) => {
+  if (!timestamp) return ''
+  const now = Date.now() / 1000
+  const diff = now - timestamp
+  if (diff < 60) return 'Ahora mismo'
+  if (diff < 3600) return `Hace ${Math.floor(diff / 60)} min`
+  if (diff < 86400) return `Hace ${Math.floor(diff / 3600)} h`
+  return new Date(timestamp * 1000).toLocaleDateString()
 }
 
 const toggleMenu = (e: Event) => {
@@ -73,6 +84,7 @@ onUnmounted(() => window.removeEventListener('click', closeMenu))
     <div class="album-col">{{ track.album }}</div>
     
     <div class="actions-col">
+      <span class="played-at" v-if="showPlayedAt && track.played_at">{{ formatPlayedAt(track.played_at) }}</span>
       <button class="action-btn" title="Me gusta"><Heart :size="18" /></button>
       <span class="duration">{{ formatTime(track.duration_ms || track.duration) }}</span>
       <div class="menu-container" ref="menuRef">
@@ -130,6 +142,7 @@ onUnmounted(() => window.removeEventListener('click', closeMenu))
 .track-row-2026:hover .action-btn { opacity: 1; }
 .action-btn:hover { color: white; }
 .duration { font-size: 0.8rem; min-width: 40px; text-align: right; font-variant-numeric: tabular-nums; }
+.played-at { font-size: 0.75rem; color: var(--spotify-text-grey); margin-right: 12px; white-space: nowrap; }
 .menu-container { position: relative; }
 .track-menu { position: absolute; top: 100%; right: 0; background: #282828; border-radius: 4px; box-shadow: 0 16px 24px rgba(0,0,0,0.4); padding: 4px; min-width: 220px; z-index: 100; }
 .track-menu button { width: 100%; padding: 12px; font-size: 0.85rem; color: #b3b3b3; text-align: left; border-radius: 2px; display: flex; align-items: center; gap: 12px; }
