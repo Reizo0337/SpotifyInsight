@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { X, Music, Download, Link, Search, AlertTriangle } from 'lucide-vue-next'
+import { X, Music, Link, Search, AlertTriangle } from 'lucide-vue-next'
 import { useMusicStore } from '../stores/musicStore'
 
 const musicStore = useMusicStore()

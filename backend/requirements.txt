@@ -18,3 +18,11 @@ scikit-learn
 tqdm
 datasets
 yt-dlp
+sqlalchemy
+pymysql
+passlib[bcrypt]
+cryptography
+PyJWT
+python-multipart
+python-jose[cryptography]
+email-validator

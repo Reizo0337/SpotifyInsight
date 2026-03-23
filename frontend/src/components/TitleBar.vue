@@ -29,41 +29,44 @@ const goForward = () => {
 </script>
 
 <template>
-  <div v-if="isElectron" class="electron-titlebar">
+  <div v-if="isElectron" class="nebula-titlebar">
     <div class="left-section">
       <div class="app-logo">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="#1565FF" xmlns="http://www.w3.org/2000/svg">
-          <path d="M12 0C5.37 0 0 5.37 0 12s5.37 12 12 12 12-5.37 12-12S18.63 0 12 0zm5.49 17.29c-.22.35-.67.46-1.02.24-2.84-1.74-6.42-2.13-10.63-1.18-.4.09-.79-.16-.88-.55-.09-.4.16-.79.55-.88 4.62-1.05 8.58-.6 11.75 1.34.34.22.45.67.23 1.03zm1.46-3.26c-.27.44-.85.59-1.3.31-3.25-1.99-8.2-2.58-12.04-1.41-.5.15-1.02-.13-1.17-.63-.15-.5.13-1.02.63-1.17 4.41-1.34 9.87-.67 13.57 1.6.45.27.6.85.31 1.3zm.14-3.41c-3.9-2.31-10.32-2.53-14.07-1.39-.6.18-1.24-.16-1.42-.76-.18-.6.16-1.24.76-1.42 4.31-1.31 11.41-1.05 15.93 1.63.54.32.72 1.02.4 1.56-.32.54-1.02.72-1.6.4z"/>
+         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 2L2 7L12 12L22 7L12 2Z" fill="var(--nebula-primary)"/>
         </svg>
       </div>
       <div class="nav-controls">
         <button @click="goBack" class="nav-btn" title="Atrás">
-          <ChevronLeft :size="24" />
+          <ChevronLeft :size="18" />
         </button>
         <button @click="goForward" class="nav-btn" title="Adelante">
-          <ChevronRight :size="24" />
+          <ChevronRight :size="18" />
         </button>
       </div>
     </div>
 
     <div class="drag-region">
-      <span class="app-title">Spotipy Insight</span>
+      <span class="app-title">NEBULA MUSIC CORE</span>
     </div>
     
     <div class="right-section">
-      <div class="user-pill">
-        <span>{{ musicStore.userProfile?.user_name || 'Spotify User' }}</span>
-        <div class="avatar">{{ musicStore.userProfile?.user_name?.charAt(0) || 'S' }}</div>
+      <div class="user-pill" v-if="musicStore.userProfile">
+        <div class="avatar">
+            <img :src="`https://api.dicebear.com/7.x/identicon/svg?seed=${musicStore.userProfile?.username || 'nebula'}`" alt="U">
+        </div>
+        <span>{{ musicStore.userProfile?.username || 'User' }}</span>
       </div>
+      
       <div class="window-controls">
         <button @click="minimize" class="window-btn" title="Minimizar">
-          <Minus :size="20" />
+          <Minus :size="18" />
         </button>
         <button @click="toggleMaximize" class="window-btn" title="Maximizar">
-          <Square :size="16" />
+          <Square :size="14" />
         </button>
         <button @click="close" class="window-btn close-btn" title="Cerrar">
-          <X :size="20" />
+          <X :size="18" />
         </button>
       </div>
     </div>
@@ -71,20 +74,20 @@ const goForward = () => {
 </template>
 
 <style scoped>
-.electron-titlebar {
-  height: 48px;
-  background: #000;
+.nebula-titlebar {
+  height: 44px;
+  background: var(--nebula-bg);
   display: flex;
   align-items: center;
   justify-content: space-between;
   user-select: none;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid var(--glass-border);
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
-  z-index: 9999;
-  padding: 0 8px;
+  z-index: 10001;
+  padding: 0 12px;
 }
 
 .left-section {
@@ -95,7 +98,6 @@ const goForward = () => {
 }
 
 .app-logo {
-  padding-left: 8px;
   display: flex;
   align-items: center;
 }
@@ -107,12 +109,12 @@ const goForward = () => {
 }
 
 .nav-btn {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: rgba(0,0,0,0.7);
-  border: none;
-  color: #fff;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--nebula-surface);
+  border: 1px solid var(--glass-border);
+  color: var(--nebula-text-dim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -121,7 +123,8 @@ const goForward = () => {
 }
 
 .nav-btn:hover {
-  background: rgba(255,255,255,0.1);
+  background: var(--nebula-surface-hover);
+  color: white;
 }
 
 .drag-region {
@@ -134,12 +137,11 @@ const goForward = () => {
 }
 
 .app-title {
-  font-size: 11px;
-  font-weight: 700;
-  color: #b3b3b3;
-  letter-spacing: 1px;
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--nebula-text-muted);
+  letter-spacing: 2px;
   text-transform: uppercase;
-  opacity: 0.8;
 }
 
 .right-section {
@@ -151,58 +153,65 @@ const goForward = () => {
 }
 
 .user-pill {
-    background: rgba(40, 40, 40, 0.7);
-    padding: 2px 2px 2px 12px;
-    border-radius: 32px;
+    background: var(--nebula-surface);
+    border: 1px solid var(--glass-border);
+    padding: 2px 12px 2px 4px;
+    border-radius: 500px;
     display: flex;
     align-items: center;
-    gap: 8px;
-    font-size: 0.8rem;
+    gap: 10px;
+    font-size: 0.75rem;
     font-weight: 700;
-    color: white;
+    color: var(--nebula-text-dim);
     cursor: pointer;
+    transition: all 0.2s;
 }
 
 .user-pill:hover {
-    background: rgba(60, 60, 60, 0.8);
+    background: var(--nebula-surface-hover);
+    color: white;
 }
 
 .avatar {
-    width: 28px;
-    height: 28px;
-    background: #535353;
+    width: 24px;
+    height: 24px;
     border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.7rem;
+    overflow: hidden;
+    border: 1px solid var(--nebula-primary);
+}
+
+.avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
 }
 
 .window-controls {
   display: flex;
   height: 100%;
+  margin-left: 8px;
 }
 
 .window-btn {
-  width: 48px;
+  width: 44px;
   height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
   background: transparent;
   border: none;
-  color: #b3b3b3;
+  color: var(--nebula-text-dim);
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .window-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--nebula-surface-hover);
   color: white;
 }
 
 .close-btn:hover {
-  background: #e81123 !important;
+  background: #ff4444 !important;
   color: white !important;
 }
 </style>
