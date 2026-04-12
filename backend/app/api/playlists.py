@@ -1,32 +1,58 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
-import json, asyncio, time, uuid
+import json, asyncio, time, uuid, concurrent.futures
 
-from ..db.session import get_db
+from ..db.session import get_db, SessionLocal
 from ..db.models import Playlist, PlaylistTrack, Track, User
 from ..core.auth_utils import get_current_user
 from ..services.spotify_service import SpotifyService
 from ..services.ytmusic_service import YTMusicService
 from ..services.playlist_scraper import scrape_playlist_tracks
 from ..core.logging import Logger
+from ..schemas import PlaylistBase, PlaylistCreate, PlaylistImport, TrackBase
 
 router = APIRouter()
 
 @router.get("/")
 async def get_playlists(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Fetches all playlists owned by the authenticated user."""
-    return db.query(Playlist).filter(Playlist.user_id == current_user.id).all()
+    """Fetches all playlists owned by the authenticated user, including track IDs."""
+    playlists = db.query(Playlist).filter(Playlist.user_id == current_user.id).all()
+    result = []
+    for pl in playlists:
+        track_ids = [pt.spotify_id for pt in pl.tracks]
+        
+        # Determine thumbnail signal from the first track in the sequence
+        thumbnail = None
+        if pl.tracks:
+            first_track_link = pl.tracks[0]
+            first_track = db.query(Track).filter(Track.spotify_id == first_track_link.spotify_id).first()
+            if first_track:
+                thumbnail = first_track.thumbnail
+
+        result.append({
+            "id": pl.id,
+            "name": pl.name,
+            "is_public": pl.is_public,
+            "tracks": track_ids,
+            "thumbnail": thumbnail
+        })
+    return result
 
 @router.post("/")
-async def create_playlist(name: str, is_public: bool = True, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def create_playlist(req: PlaylistCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Creates a new empty playlist tied to the user."""
-    new_pl = Playlist(id=str(uuid.uuid4()), name=name, user_id=current_user.id, is_public=is_public)
+    new_pl = Playlist(
+        id=str(uuid.uuid4()), 
+        name=req.name, 
+        user_id=current_user.id, 
+        is_public=req.is_public
+    )
     db.add(new_pl)
     db.commit()
     db.refresh(new_pl)
-    return new_pl
+    return {"id": new_pl.id, "name": new_pl.name, "is_public": new_pl.is_public, "tracks": []}
 
 @router.delete("/{playlist_id}")
 async def delete_playlist(playlist_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -42,11 +68,9 @@ async def delete_playlist(playlist_id: str, current_user: User = Depends(get_cur
 @router.post("/{playlist_id}/tracks")
 async def add_track_to_playlist(playlist_id: str, spotify_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Associates a track with a playlist in SQL."""
-    # Check ownership
     pl = db.query(Playlist).filter(Playlist.id == playlist_id, Playlist.user_id == current_user.id).first()
     if not pl: raise HTTPException(status_code=404, detail="No tienes acceso a esta lista")
     
-    # Check if already in playlist
     exists = db.query(PlaylistTrack).filter(PlaylistTrack.playlist_id == playlist_id, PlaylistTrack.spotify_id == spotify_id).first()
     if exists: return {"status": "already_exists"}
     
@@ -55,129 +79,110 @@ async def add_track_to_playlist(playlist_id: str, spotify_id: str, current_user:
     db.commit()
     return {"status": "success"}
 
-# --- SSE Stream Logic for Spotify Imports (Integrated with SQL) ---
-
-@router.get("/import/stream")
-async def import_spotify_stream(playlist_id: str, name: str, target_playlist_id: str = "", current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """
-    Parallel SSE streaming import using MySQL as the primary store.
-    Sends real-time JSON updates.
-    """
-    sp = SpotifyService()
-    import concurrent.futures
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=6)
-
-    async def event_generator():
-        def send(type: str, **kwargs):
-            return f"data: {json.dumps({'type': type, **kwargs})}\n\n"
-
-        loop = asyncio.get_event_loop()
-
-        # Step 1: Destination playlist shell
-        if target_playlist_id:
-            final_pl_id = target_playlist_id
-        else:
-            new_pl = Playlist(id=str(uuid.uuid4()), name=name, user_id=current_user.id)
-            db.add(new_pl)
-            db.commit()
-            db.refresh(new_pl)
-            final_pl_id = new_pl.id
-        yield send("playlist_created", id=final_pl_id, name=name)
-
-        # Step 2: Extract tracks via scraping
-        yield send("status", message="Escaneando el universo Spotify...")
-        scraped = await loop.run_in_executor(None, scrape_playlist_tracks, playlist_id)
-        if not scraped:
-            yield send("error", message="La nebulosa está vacía o es privada.")
-            return
-
-        total = len(scraped)
-        yield send("total", count=total)
-
-        # Step 3: Fast Batch Enrichment
-        track_map = {t["spotify_id"]: t for t in scraped if t.get("spotify_id")}
-        all_ids = list(track_map.keys())
+@router.get("/{playlist_id}/tracks")
+async def get_playlist_tracks(playlist_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Fetches all tracks associated with a specific playlist, with proxied audio signals."""
+    # Check ownership or visibility
+    pl = db.query(Playlist).filter(Playlist.id == playlist_id).first()
+    if not pl: raise HTTPException(status_code=404, detail="Lista no encontrada")
+    if not pl.is_public and pl.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Acceso denegado")
         
-        if sp.is_connected():
-            for i in range(0, len(all_ids), 50):
-                batch = all_ids[i:i+50]
-                try:
-                    res = await loop.run_in_executor(None, lambda b=batch: sp._call_api("tracks", b))
-                    if res and "tracks" in res:
-                        for f in res["tracks"]:
-                            if not f: continue
-                            tid = f["id"]
-                            if tid in track_map:
-                                artists = f.get("artists", [])
-                                album = f.get("album", {})
-                                track_map[tid].update({
-                                    "artist": artists[0]["name"] if artists else "Unknown",
-                                    "album": album.get("name", "Unknown"),
-                                    "thumbnail": album.get("images", [{}])[0].get("url", ""),
-                                    "duration_ms": f.get("duration_ms", 0),
-                                    "popularity": f.get("popularity", 0),
-                                })
-                except Exception as e:
-                    Logger.warning("IMPORT", f"Batch Spotify error: {e}")
-                await asyncio.sleep(0)
-
-        # Save to MySQL Tracks repository and associate with Playlist
-        for tid, t in track_map.items():
-            # Merge track into database (upsert)
-            existing_t = db.query(Track).filter(Track.spotify_id == tid).first()
-            if not existing_t:
-                new_t = Track(
-                    spotify_id=tid, 
-                    track_name=t.get("track_name", "Unknown"),
-                    artist=t.get("artist", "Unknown"),
-                    album=t.get("album", "Unknown"),
-                    thumbnail=t.get("thumbnail", ""),
-                    duration_ms=t.get("duration_ms", 0),
-                    popularity=t.get("popularity", 0)
-                )
-                db.add(new_t)
+    tracks = db.query(Track).join(PlaylistTrack).filter(PlaylistTrack.playlist_id == playlist_id).all()
+    
+    results = []
+    for t in tracks:
+        stream = None
+        if t.stream_url and (t.stream_expiry and t.stream_expiry > time.time() + 120):
+            import urllib.parse
+            stream = f"/api/v1/music/proxy_stream?url={urllib.parse.quote(t.stream_url)}"
             
-            # Link to Playlist
-            exists_link = db.query(PlaylistTrack).filter(PlaylistTrack.playlist_id == final_pl_id, PlaylistTrack.spotify_id == tid).first()
-            if not exists_link:
-                db.add(PlaylistTrack(playlist_id=final_pl_id, spotify_id=tid))
+        results.append({
+            "spotify_id": t.spotify_id,
+            "track_name": t.track_name,
+            "artist": t.artist or "Unknown",
+            "album": t.album or "Unknown",
+            "thumbnail": t.thumbnail or "",
+            "duration_ms": t.duration_ms or 0,
+            "yt_id": t.yt_id,
+            "stream_url": stream,
+        })
+    return results
+
+@router.get("/spotify-info")
+async def get_spotify_playlist_info(url: str, current_user: User = Depends(get_current_user)):
+    """Fetches metadata for a Spotify playlist by URL."""
+    sp = SpotifyService(token_info=current_user.spotify_token_info)
+    pid = url.split("/")[-1].split("?")[0].split(":")[-1]
+    info = sp.get_playlist_metadata(pid)
+    if not info:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    
+    # Fallback: if API says 0 but it's a valid response, try scraper for count
+    if info.get("track_count") == 0:
+        Logger.info("API", f"Spotify API returned 0 tracks for {pid}, trying scraper fallback...")
+        scraped = await asyncio.get_event_loop().run_in_executor(None, scrape_playlist_tracks, pid)
+        if scraped:
+            info["track_count"] = len(scraped)
+            info["total"] = len(scraped)
+            Logger.info("API", f"Scraper found {len(scraped)} tracks as fallback.")
+            
+    return info
+
+@router.post("/import/start")
+async def start_playlist_import(
+    req: PlaylistImport, 
+    current_user: User = Depends(get_current_user), 
+    db: Session = Depends(get_db)
+):
+    """
+    ULTRA-LIGHT TRIGGER: Handled by architectural mandate.
+    Validates, enqueues, and delegates to the worker.
+    """
+    import uuid
+    job_id = str(uuid.uuid4())
+    
+    # 1. Clean URL/ID
+    pid = req.url.split("playlist/")[-1].split("?")[0] if "playlist/" in req.url else req.url
+    
+    # 2. Persist Job record
+    from ..db.models import Job
+    new_job = Job(
+        id=job_id,
+        user_id=current_user.id,
+        type="playlist_import",
+        status="queued",
+        message="Esperando turno en el Escuadrón de Sanación...",
+        result={"playlist_id": pid, "name": req.name, "target_playlist_id": req.target_playlist_id}
+    )
+    db.add(new_job)
+    db.commit()
+
+    # 3. Fire-and-forget sub-process (as per mandate for isolation)
+    try:
+        import subprocess, sys
+        subprocess.Popen([sys.executable, "-m", "app.worker"], start_new_session=True)
+    except: pass
+
+    return {"job_id": job_id, "status": "queued"}
+
+@router.get("/import/status/{job_id}")
+async def get_import_status(
+    job_id: str, 
+    current_user: User = Depends(get_current_user), 
+    db: Session = Depends(get_db)
+):
+    """LIGHTWEIGHT POLLING: Returns the current state of the background job."""
+    from ..db.models import Job
+    job = db.query(Job).filter(Job.id == job_id, Job.user_id == current_user.id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
         
-        db.commit()
-        yield send("phase2_start", message="Canciones añadidas. Sincronizando audio en paralelo...")
-
-        # Step 4: Parallel YouTube Linking (6 threads)
-        needs_yt = []
-        # Pre-check which tracks in DB still need a YT ID
-        # ... logic skipped for brevity but would query Tracks table for NULL yt_id
-        # For simplicity in this chunk, iterate scraped
-        for tid, t in track_map.items():
-            needs_yt.append((tid, t.get("track_name", "Unknown"), t.get("artist", "Unknown")))
-
-        sem = asyncio.Semaphore(6)
-        async def fetch_yt(tid, tn, ar):
-            async with sem:
-                try:
-                    yt_result = await loop.run_in_executor(executor, lambda: YTMusicService.search_and_get_stream(tn, ar))
-                    if yt_result:
-                        db.query(Track).filter(Track.spotify_id == tid).update({
-                            "yt_id": yt_result.get("video_id", ""),
-                            "stream_url": yt_result.get("stream_url", ""),
-                            "stream_expiry": time.time() + 18000,
-                            "duration_ms": int(yt_result.get("duration", 0)) * 1000
-                        })
-                        db.commit()
-                except: pass
-
-        tasks = [asyncio.create_task(fetch_yt(tid, tn, ar)) for tid, tn, ar in needs_yt]
-        reported = 0
-        while reported < len(tasks):
-            done = sum(1 for t in tasks if t.done())
-            if done > reported:
-                reported = done
-                yield send("progress", current=reported, total=len(tasks), phase="yt", phase_label=f"Audio: {reported}/{len(tasks)}")
-            await asyncio.sleep(0.5)
-
-        executor.shutdown(wait=False)
-        yield send("done", id=final_pl_id, total=total)
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "progress": job.progress,
+        "message": job.message,
+        "result": job.result,
+        "error": job.error
+    }

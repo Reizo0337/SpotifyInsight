@@ -52,6 +52,7 @@ defineProps<{
   position: relative;
   overflow: hidden;
   cursor: default;
+  width: 100%;
 }
 
 .stat-card-nebula:hover {

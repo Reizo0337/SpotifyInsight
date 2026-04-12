@@ -8,6 +8,7 @@ import { RouterView, RouterLink } from 'vue-router'
 import { useMusicStore } from './stores/musicStore'
 import { Home, Search, Layers } from 'lucide-vue-next'
 import CreatePlaylistModal from './components/CreatePlaylistModal.vue'
+import OnboardingModal from './components/OnboardingModal.vue'
 
 const musicStore = useMusicStore()
 const route = useRoute()
@@ -59,6 +60,7 @@ onMounted(async () => {
 
     <Player />
     <CreatePlaylistModal />
+    <OnboardingModal />
   </div>
 
   <template v-else>
@@ -70,7 +72,7 @@ onMounted(async () => {
 .app-layout {
   display: grid;
   grid-template-columns: var(--sidebar-width, 280px) 1fr;
-  grid-template-rows: 1fr auto;
+  grid-template-rows: minmax(0, 1fr) auto;
   grid-template-areas: 
     "sidebar main"
     "player player";
@@ -78,10 +80,13 @@ onMounted(async () => {
   gap: 12px;
   flex: 1;
   overflow: hidden;
+  height: 100vh;
+  box-sizing: border-box;
 }
 
 .sidebar-nebula {
   grid-area: sidebar;
+  min-height: 0;
 }
 
 .main-content {
@@ -149,6 +154,7 @@ body.is-electron #app {
 
 .view-container {
     padding: 0 16px;
+    padding-bottom: 128px;
 }
 
 @media (max-width: 768px) {

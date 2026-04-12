@@ -1,7 +1,7 @@
-from sqlalchemy import Column, String, Integer, Boolean, Float, ForeignKey, DateTime, JSON, Text
+from sqlalchemy import Column, String, Integer, BigInteger, Boolean, Float, ForeignKey, DateTime, JSON, Text
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
-from datetime import datetime
+from datetime import datetime, timezone
 
 Base = declarative_base()
 
@@ -11,7 +11,7 @@ class User(Base):
     username = Column(String(50), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
     email = Column(String(100), unique=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     # Spotify Integration
     spotify_token_info = Column(JSON, nullable=True) # {access, refresh, expires...}
@@ -32,6 +32,7 @@ class Track(Base):
     thumbnail = Column(String(512))
     duration_ms = Column(Integer, default=0)
     popularity = Column(Integer, default=0)
+    view_count = Column(BigInteger, default=0) # Supports billions of views (Rihanna-ready)
     yt_id = Column(String(50), nullable=True)
     stream_url = Column(Text, nullable=True)
     stream_expiry = Column(Float, default=0)
@@ -42,7 +43,7 @@ class Track(Base):
     tempo = Column(Float, default=0.0)
     valence = Column(Float, default=0.0)
     
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 class Playlist(Base):
     __tablename__ = "playlists"
@@ -50,7 +51,7 @@ class Playlist(Base):
     name = Column(String(255), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"))
     is_public = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     # Store JSON array of spotify_ids for tracks
     # This simplifies things vs a join table for now if we want to keep current logic
@@ -63,7 +64,7 @@ class PlaylistTrack(Base):
     id = Column(Integer, primary_key=True)
     playlist_id = Column(String(50), ForeignKey("playlists.id"))
     spotify_id = Column(String(50), ForeignKey("tracks.spotify_id"))
-    added_at = Column(DateTime, default=datetime.utcnow)
+    added_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     playlist = relationship("Playlist", back_populates="tracks")
 
@@ -71,7 +72,7 @@ class Favorite(Base):
     __tablename__ = "favorites"
     user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
     spotify_id = Column(String(50), ForeignKey("tracks.spotify_id"), primary_key=True)
-    added_at = Column(DateTime, default=datetime.utcnow)
+    added_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     user = relationship("User", back_populates="favorites")
 
@@ -80,6 +81,26 @@ class History(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     spotify_id = Column(String(50), ForeignKey("tracks.spotify_id"))
-    played_at = Column(DateTime, default=datetime.utcnow)
+    played_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     user = relationship("User", back_populates="history")
+
+class Job(Base):
+    """Asynchronous job tracking for heavy tasks with high observability."""
+    __tablename__ = "jobs"
+    id = Column(String(50), primary_key=True) # UUID
+    user_id = Column(Integer, ForeignKey("users.id"))
+    type = Column(String(50)) # e.g., 'playlist_import'
+    
+    # States: queued, assigned, processing, retrying, completed, failed, cancelled
+    status = Column(String(20), default="queued") 
+    progress = Column(Integer, default=0) # 0-100
+    message = Column(String(255), nullable=True) 
+    
+    result = Column(JSON, nullable=True) 
+    error = Column(Text, nullable=True)
+    retry_count = Column(Integer, default=0)
+    
+    heartbeat_at = Column(DateTime, nullable=True) # Last time worker was alive
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

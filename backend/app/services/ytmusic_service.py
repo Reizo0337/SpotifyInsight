@@ -42,6 +42,7 @@ class YTMusicService:
                             "title": info_dict.get("title", f"{artist} - {track_name}"),
                             "thumbnail": info_dict.get("thumbnail", ""),
                             "duration": info_dict.get("duration", 0),
+                            "view_count": info_dict.get("view_count", 0),
                             "video_id": video_id,
                         }
             except Exception as e:
@@ -49,14 +50,20 @@ class YTMusicService:
 
         # 2. SEARCH PATH: String fallback
         effective_artist = artist if (artist and artist.lower() != "unknown") else ""
+        
+        # Tiered search strategy for maximum resilience
         queries = []
         if effective_artist:
-            queries.append(f"ytsearch5:{effective_artist} - {track_name}")
+            queries.append(f"ytsearch5:{effective_artist} {track_name} official audio")
+            queries.append(f"ytsearch5:{effective_artist} - {track_name} topic")
+            queries.append(f"ytsearch5:{effective_artist} {track_name}")
+        queries.append(f"ytsearch5:{track_name} official audio")
         queries.append(f"ytsearch5:{track_name}")
         
         ydl_opts = _quiet_ydl_opts({
             "format": "bestaudio/best",
             "noplaylist": True,
+            "source_address": "0.0.0.0" # Force IPv4 for stability
         })
 
         for query in queries:
@@ -78,6 +85,7 @@ class YTMusicService:
                                 "title": entry.get("title", f"{artist} - {track_name}"),
                                 "thumbnail": entry.get("thumbnail", ""),
                                 "duration": entry.get("duration", 0),
+                                "view_count": entry.get("view_count", 0),
                                 "video_id": entry.get("id"),
                             }
             except Exception as e:
@@ -131,9 +139,9 @@ class YTMusicService:
                         "id": entry.get("id"),
                         "track_name": track_name,
                         "artist": artist,
-                        "album": uploader, # Use channel name instead of "YouTube Result"
+                        "album": uploader,
                         "thumbnail": entry.get("thumbnail") or (entry.get("thumbnails", [{}])[0].get("url") if entry.get("thumbnails") else None),
-                        "duration": entry.get("duration", 0),
+                        "duration_ms": entry.get("duration", 0) * 1000,
                         "spotify_id": f"yt_{entry.get('id')}"
                     })
             return results

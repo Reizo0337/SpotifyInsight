@@ -23,7 +23,7 @@ const fetchTracks = async () => {
   isLoading.value = true
   try {
     const ids = playlist.value.tracks.join(',')
-    const data = await musicStore._apiCall('/tracks', { ids })
+    const data = await musicStore._apiCall('/music/tracks', { ids })
     if (data) {
       playlistTracks.value = data
     }
@@ -95,6 +95,10 @@ watch(playlistId, () => {
         <RouterLink to="/search" class="find-link">Añadir canciones</RouterLink>
       </div>
     </div>
+  </div>
+  <div v-else-if="musicStore.playlists.length === 0 && musicStore.accessToken" class="loading-full">
+    <div class="spinner-nebula"></div>
+    <p>Sincronizando con el servidor...</p>
   </div>
   <div v-else class="not-found">
     Playlist no encontrada
@@ -197,10 +201,32 @@ watch(playlistId, () => {
   align-items: center;
 }
 
-.loading, .empty-state, .not-found {
+.loading, .empty-state, .not-found, .loading-full {
   text-align: center;
   padding: 60px 0;
   color: var(--spotify-text-grey);
+}
+
+.loading-full {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 60vh;
+}
+
+.spinner-nebula {
+  width: 40px;
+  height: 40px;
+  border: 4px solid rgba(99, 102, 241, 0.1);
+  border-left-color: var(--nebula-primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 20px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 .find-link {

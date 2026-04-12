@@ -1,48 +1,63 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+
 from .api.auth import router as auth_router
 from .api.music import router as music_router
 from .api.playlists import router as playlists_router
-from .api.endpoints import router as legacy_router
 from .db.session import init_db
-from .services.enrichment_service import start_enrichment_worker
+from .core.logging import Logger
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic
+    Logger.info("SYSTEM", "Nebula Music Engine initializing...")
+    try:
+        init_db()
+        Logger.info("SYSTEM", "Capa de API ligera lista. Operaciones pesadas delegadas al Worker.")
+    except Exception as e:
+        Logger.error("SYSTEM", f"Initialization failure: {e}")
+    
+    yield
+    
+    # Shutdown logic
+    Logger.info("SYSTEM", "Nebula Music Engine powering down.")
 
 app = FastAPI(
     title="Nebula Music API",
     description="Motor de audio para la nueva era de Nebula",
-    version="2.0.0"
+    version="2.1.0",
+    lifespan=lifespan
 )
 
-# Initialize Database and Background Services
-@app.on_event("startup")
-async def on_startup():
-    try:
-        init_db()
-        # Start background health worker for track metadata
-        start_enrichment_worker()
-    except Exception as e:
-        print(f"Error initializing services: {e}")
-
 # Configure CORS
+origins = [
+    "http://localhost:5173",
+    "http://localhost:8000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:8000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Modular Routers
-app.include_router(auth_router, prefix="/api/auth", tags=["Auth"])
-app.include_router(music_router, prefix="/api/music", tags=["Music"])
-app.include_router(playlists_router, prefix="/api/playlists", tags=["Playlists"])
-app.include_router(legacy_router, prefix="/api", tags=["Legacy"])
+# Modular Routers (v1)
+app.include_router(auth_router, prefix="/api/v1/auth", tags=["Auth"])
+app.include_router(music_router, prefix="/api/v1/music", tags=["Music"])
+app.include_router(playlists_router, prefix="/api/v1/playlists", tags=["Playlists"])
 
+# Nebula Music API - Core initialized
 @app.get("/")
 async def root():
     return {
         "app": "Nebula Music",
         "status": "online",
-        "engine": "Cosmos Core 2.0",
-        "features": ["Modular Auth", "MySQL Persistent", "Parallel Import"]
+        "version": "2.1.1", # Increment version for reload
+        "engine": "Cosmos Core 2.1 (Stability Patch)",
+        "philosophy": "SQL-first, Low-latency streaming"
     }

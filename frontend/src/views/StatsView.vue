@@ -1,14 +1,18 @@
 <script setup lang="ts">
+import { onMounted } from 'vue'
 import { useMusicStore } from '../stores/musicStore'
 import { useRouter } from 'vue-router'
 import {
-  ChevronLeft, TrendingUp, Mic2, Radio, Trophy, Award, Medal
+  ChevronLeft, TrendingUp, Mic2, Radio, Trophy, Award, Medal,
+  Activity, Zap, Clock, Disc, Music
 } from 'lucide-vue-next'
+import StatCard from '../components/StatCard.vue'
 
 const musicStore = useMusicStore()
 const router = useRouter()
 
 const formatPercent = (val: number) => Math.round(val * 100) + '%'
+const formatNumber = (num: number) => new Intl.NumberFormat().format(Math.round(num))
 
 const getTrophyColor = (index: number) => {
   if (index === 0) return '#b9f2ff' // Diamond
@@ -23,242 +27,349 @@ const getRankIcon = (index: number) => {
   if (index === 2) return Medal
   return null
 }
+
+onMounted(() => {
+    musicStore.fetchTopData()
+    musicStore.fetchAllData()
+})
 </script>
 
 <template>
-  <div class="stats-view">
-    <button @click="router.back()" class="back-btn">
-      <ChevronLeft :size="20" />
-      <span>Volver</span>
-    </button>
+  <div class="stats-view custom-scrollbar">
+    <div class="stats-container">
+        <button @click="router.back()" class="back-btn">
+        <ChevronLeft :size="20" />
+        <span>RECEPTOR / ATRÁS</span>
+        </button>
 
-    <header class="header">
-      <h1>Estadísticas Detalladas</h1>
-      <p>Un análisis profundo de tus hábitos y preferencias musicales en SpotifyInsights.</p>
-    </header>
+        <header class="header">
+        <div class="header-meta">SIGNAL ANALYSIS // V2.1</div>
+        <h1>Centro de Inteligencia</h1>
+        <p>Decodificando tu frecuencia musical. Análisis basado en {{ musicStore.stats?.total_listened }} puntos de señal.</p>
+        </header>
 
-    <div class="stats-grid">
-      <section class="stat-section main-stats">
-        <h2>Atributos de Audio</h2>
-        <div class="audio-features">
-          <div class="feature-row" v-for="(val, key) in {
-            'Energía': musicStore.stats?.avg_energy,
-            'Bailabilidad': musicStore.stats?.avg_danceability,
-            'Valencia (Positividad)': musicStore.stats?.avg_valence,
-            'Acústica': musicStore.stats?.avg_acousticness,
-            'Instrumentalidad': musicStore.stats?.avg_instrumentalness
-          }" :key="key">
-            <span class="f-label">{{ key }}</span>
-            <div class="f-bar-bg">
-              <div class="f-bar-fill" :style="{ width: formatPercent(val || 0) }"></div>
+        <!-- KPI Grid -->
+        <div class="kpi-grid">
+            <div class="kpi-card glass">
+                <div class="kpi-icon"><Clock :size="24" /></div>
+                <div class="kpi-info">
+                    <span class="k-label">TIEMPO TOTAL</span>
+                    <span class="k-val">{{ formatNumber(musicStore.stats?.total_playtime_min || 0) }} <small>MIN</small></span>
+                </div>
             </div>
-            <span class="f-val">{{ formatPercent(val || 0) }}</span>
-          </div>
-        </div>
-      </section>
-
-      <section class="stat-section">
-        <h2><Mic2 :size="20" /> Top 10 Artistas</h2>
-        <div class="ranking-list">
-          <div v-for="(count, artist, i) in musicStore.stats?.top_artists" :key="artist" class="rank-item" :class="'rank-' + (Number(i) + 1)">
-            <div class="rank-info">
-              <span class="rank-number">{{ Number(i) + 1 }}</span>
-              <component :is="getRankIcon(Number(i))" v-if="Number(i) < 3" :size="18" :color="getTrophyColor(Number(i))" class="trophy" />
-              <span class="item-name">{{ artist }}</span>
+            <div class="kpi-card glass highlight">
+                <div class="kpi-icon"><Activity :size="24" /></div>
+                <div class="kpi-info">
+                    <span class="k-label">INTENSIDAD VIBE</span>
+                    <span class="k-val">{{ Math.round((musicStore.stats?.vibe_intensity || 0) * 100) }}%</span>
+                </div>
+                <div class="kpi-progress"><div class="kp-fill" :style="{ width: (musicStore.stats?.vibe_intensity * 100 || 0) + '%' }"></div></div>
             </div>
-            <span class="item-meta">{{ count }} reproducciones</span>
-          </div>
-        </div>
-      </section>
-
-      <section class="stat-section">
-        <h2><Radio :size="20" /> Top 10 Géneros</h2>
-        <div class="ranking-list" v-if="musicStore.stats?.top_genres">
-          <div v-for="(percent, name, i) in musicStore.stats.top_genres" :key="name" class="rank-item" :class="'rank-' + (Number(i) + 1)">
-            <div class="rank-info">
-              <span class="rank-number">{{ Number(i) + 1 }}</span>
-              <component :is="getRankIcon(Number(i))" v-if="Number(i) < 3" :size="18" :color="getTrophyColor(Number(i))" class="trophy" />
-              <span class="item-name">{{ name }}</span>
+            <div class="kpi-card glass">
+                <div class="kpi-icon"><Zap :size="24" /></div>
+                <div class="kpi-info">
+                    <span class="k-label">ENGAGEMENT</span>
+                    <span class="k-val">{{ Math.round(musicStore.stats?.engagement_score || 0) }}%</span>
+                </div>
             </div>
-            <span class="item-meta">{{ percent }}% afinidad</span>
-          </div>
+            <div class="kpi-card glass">
+                <div class="kpi-icon"><Music :size="24" /></div>
+                <div class="kpi-info">
+                    <span class="k-label">CATÁLOGO</span>
+                    <span class="k-val">{{ musicStore.stats?.total_tracks }} <small>TRACKS</small></span>
+                </div>
+            </div>
         </div>
-      </section>
 
-      <section class="stat-section highlights">
-        <h2>Hitos de tu Biblioteca</h2>
-        <div class="highlight-cards">
-          <div class="h-card">
-            <TrendingUp :size="24" color="#1565FF" />
-            <span class="h-label">Popularidad Media</span>
-            <span class="h-val">{{ Math.round(musicStore.stats?.avg_popularity || 0) }}/100</span>
-          </div>
-          <div class="h-card">
-            <Disc :size="24" color="#00d4ff" />
-            <span class="h-label">Total Canciones</span>
-            <span class="h-val">{{ musicStore.stats?.total_tracks }}</span>
-          </div>
+        <div class="stats-grid">
+            <!-- Audio DNA Section -->
+            <section class="stat-section audio-dna glass">
+                <div class="section-title">
+                    <Activity :size="20" />
+                    <span>DNA MUSICAL</span>
+                </div>
+                <div class="dna-bars">
+                    <div class="dna-row" v-for="(val, key) in {
+                        'Energía': musicStore.stats?.avg_energy,
+                        'Bailabilidad': musicStore.stats?.avg_danceability,
+                        'Valencia': musicStore.stats?.avg_valence,
+                        'Popularidad': (musicStore.stats?.avg_popularity || 0) / 100
+                    }" :key="key">
+                        <div class="dna-info">
+                            <span class="dna-label">{{ key }}</span>
+                            <span class="dna-val">{{ formatPercent(val || 0) }}</span>
+                        </div>
+                        <div class="dna-bar-bg">
+                            <div class="dna-bar-fill" :style="{ width: formatPercent(val || 0) }"></div>
+                        </div>
+                    </div>
+                    <div class="dna-footer">
+                        <div class="tempo-box">
+                            <span class="t-label">TEMPO MEDIO</span>
+                            <span class="t-val">{{ Math.round(musicStore.stats?.avg_tempo || 0) }} <small>BPM</small></span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Genre Section -->
+            <section class="stat-section glass genre-section">
+                <div class="section-title">
+                    <Radio :size="20" />
+                    <span>AFINIDAD DE GÉNERO</span>
+                </div>
+                <div class="genre-cloud">
+                    <div v-for="g in musicStore.stats?.top_genres" :key="g.name" class="genre-tag">
+                        <span class="g-name">{{ g.name }}</span>
+                        <span class="g-count">{{ g.count }}</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Top Artists Section -->
+            <section class="stat-section glass">
+                <div class="section-title">
+                    <Mic2 :size="20" />
+                    <span>FUENTES DE SEÑAL TOP</span>
+                </div>
+                <div class="ranking-list">
+                    <div v-for="(artist, i) in musicStore.topArtists" :key="i" class="rank-item" :class="'rank-' + (Number(i) + 1)">
+                        <div class="rank-left">
+                            <span class="rank-idx">{{ i + 1 }}</span>
+                            <div class="rank-img">
+                                <img :src="artist.thumbnail || `https://api.dicebear.com/7.x/initials/svg?seed=${artist.artist}`" alt="">
+                            </div>
+                            <span class="rank-name">{{ artist.artist }}</span>
+                        </div>
+                        <div class="rank-right">
+                            <span class="rank-count">{{ artist.play_count }} <small>PLAYS</small></span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Top Tracks Section -->
+            <section class="stat-section glass">
+                <div class="section-title">
+                    <Disc :size="20" />
+                    <span>FRECUENCIAS RESONANTES</span>
+                </div>
+                <div class="ranking-list">
+                    <div v-for="(track, i) in musicStore.topTracks" :key="i" class="rank-item track-item">
+                        <div class="rank-left">
+                            <span class="rank-idx">{{ i + 1 }}</span>
+                            <div class="rank-img mini">
+                                <img :src="track.thumbnail" alt="">
+                            </div>
+                            <div class="track-meta">
+                                <span class="t-name">{{ track.track_name }}</span>
+                                <span class="t-artist">{{ track.artist }}</span>
+                            </div>
+                        </div>
+                        <div class="rank-right">
+                            <div class="play-pill">{{ track.play_count }}</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
         </div>
-      </section>
     </div>
   </div>
 </template>
 
 <style scoped>
 .stats-view {
-  padding: 40px;
-  display: flex;
-  flex-direction: column;
-  gap: 40px;
-  animation: fadeIn 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+  height: 100%;
+  overflow-y: auto;
+  background: radial-gradient(circle at top right, rgba(99, 102, 241, 0.05), transparent 40%);
 }
 
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(20px); }
-  to { opacity: 1; transform: translateY(0); }
+.stats-container {
+  padding: 60px 80px;
+  max-width: 1600px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 60px;
+  animation: viewEntry 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes viewEntry {
+    from { opacity: 0; transform: translateY(30px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 .back-btn {
   display: flex;
   align-items: center;
-  gap: 8px;
-  color: var(--spotify-text-grey);
-  font-weight: 700;
+  gap: 12px;
+  color: var(--nebula-text-muted);
+  font-weight: 800;
+  font-size: 0.7rem;
+  letter-spacing: 2px;
   width: fit-content;
   transition: all 0.3s;
 }
+.back-btn:hover { color: white; transform: translateX(-8px); }
 
-.back-btn:hover { color: white; transform: translateX(-4px); }
+h1 { font-size: 4rem; font-weight: 900; letter-spacing: -3px; margin: 10px 0; line-height: 1; }
+.header-meta { color: var(--nebula-primary); font-weight: 800; font-size: 0.75rem; letter-spacing: 4px; }
+.header p { color: var(--nebula-text-dim); font-size: 1.2rem; max-width: 600px; }
 
-h1 { font-size: 3.5rem; letter-spacing: -2px; }
+/* KPI Grid */
+.kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 24px;
+}
+.kpi-card {
+    padding: 24px;
+    border-radius: 20px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    position: relative;
+    overflow: hidden;
+}
+.kpi-card.highlight {
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(168, 85, 247, 0.1));
+    border-color: rgba(99, 102, 241, 0.3);
+}
+.kpi-icon {
+    width: 48px; height: 48px;
+    border-radius: 12px;
+    background: rgba(255,255,255,0.05);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--nebula-primary);
+}
+.kpi-info { display: flex; flex-direction: column; gap: 4px; }
+.k-label { font-size: 0.65rem; font-weight: 800; color: var(--nebula-text-muted); letter-spacing: 1px; }
+.k-val { font-size: 1.5rem; font-weight: 900; color: white; }
+.k-val small { font-size: 0.8rem; opacity: 0.5; }
 
-.header p { color: var(--spotify-text-grey); font-size: 1.25rem; max-width: 600px; line-height: 1.6; }
+.kpi-progress { position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: rgba(255,255,255,0.05); }
+.kp-fill { height: 100%; background: var(--nebula-primary); box-shadow: 0 0 10px var(--nebula-primary); }
 
+/* Stats Grid */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+  grid-template-columns: 450px 1fr 1fr;
   gap: 32px;
+  align-items: start;
 }
 
 .stat-section {
-  background: var(--glass-bg);
-  backdrop-filter: var(--glass-blur);
   padding: 32px;
   border-radius: 24px;
-  border: 1px solid var(--glass-border);
-}
-
-h2 {
-  font-size: 1.5rem;
-  margin-bottom: 32px;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  font-weight: 800;
-}
-
-.audio-features {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 30px;
 }
 
-.feature-row {
-  display: grid;
-  grid-template-columns: 140px 1fr 60px;
-  align-items: center;
-  gap: 20px;
+.section-title {
+    display: flex; align-items: center; gap: 12px;
+    font-size: 0.75rem; font-weight: 900; letter-spacing: 2px; color: var(--nebula-primary);
 }
 
-.f-label { font-size: 0.9rem; color: var(--spotify-text-grey); font-weight: 600; }
-
-.f-bar-bg {
-  height: 10px;
-  background: rgba(255,255,255,0.05);
-  border-radius: 5px;
-  overflow: hidden;
+/* Audio DNA */
+.dna-bars { display: flex; flex-direction: column; gap: 24px; }
+.dna-row { display: flex; flex-direction: column; gap: 10px; }
+.dna-info { display: flex; justify-content: space-between; align-items: center; }
+.dna-label { font-size: 0.85rem; font-weight: 700; color: white; }
+.dna-val { font-size: 1rem; font-weight: 900; color: var(--nebula-primary); }
+.dna-bar-bg { height: 6px; background: rgba(255,255,255,0.05); border-radius: 3px; overflow: hidden; }
+.dna-bar-fill {
+    height: 100%; background: linear-gradient(90deg, var(--nebula-primary), var(--nebula-accent));
+    border-radius: 3px; transition: width 1s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.f-bar-fill {
-  height: 100%;
-  background: var(--spotify-green);
-  border-radius: 5px;
-  transition: width 1.5s cubic-bezier(0.34, 1.56, 0.64, 1);
-  box-shadow: 0 0 15px rgba(21, 101, 255, 0.3);
+.tempo-box {
+    margin-top: 20px;
+    padding: 24px;
+    background: rgba(255,255,255,0.02);
+    border-radius: 16px;
+    border: 1px solid var(--glass-border);
+    text-align: center;
 }
+.t-label { display: block; font-size: 0.65rem; font-weight: 800; color: var(--nebula-text-muted); margin-bottom: 5px; }
+.t-val { font-size: 2rem; font-weight: 900; color: white; text-shadow: 0 0 20px rgba(255,255,255,0.2); }
 
-.f-val { font-size: 1rem; font-weight: 800; text-align: right; }
-
-.ranking-list { display: flex; flex-direction: column; gap: 8px; }
-
+/* Ranking Lists */
+.ranking-list { display: flex; flex-direction: column; gap: 12px; }
 .rank-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 16px;
-  background: rgba(255,255,255,0.02);
-  border-radius: 12px;
-  border: 1px solid rgba(255,255,255,0.03);
-  transition: all 0.3s ease;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px; border-radius: 16px; transition: all 0.3s;
+    border: 1px solid transparent;
+}
+.rank-item:hover { background: rgba(255,255,255,0.03); border-color: var(--glass-border); transform: translateX(5px); }
+
+.rank-left { display: flex; align-items: center; gap: 16px; }
+.rank-idx { font-size: 0.8rem; font-weight: 900; color: var(--nebula-text-muted); width: 20px; }
+.rank-img { width: 44px; height: 44px; border-radius: 10px; overflow: hidden; border: 1px solid var(--glass-border); }
+.rank-img.mini { width: 36px; height: 36px; }
+.rank-img img { width: 100%; height: 100%; object-fit: cover; }
+.rank-name { font-weight: 700; color: white; font-size: 1rem; }
+
+.rank-count { font-weight: 800; color: var(--nebula-primary); font-size: 0.9rem; }
+.rank-count small { font-size: 0.6rem; opacity: 0.6; }
+
+.track-meta { display: flex; flex-direction: column; }
+.t-name { font-weight: 700; color: white; font-size: 0.9rem; }
+.t-artist { font-size: 0.75rem; color: var(--nebula-text-muted); }
+
+.play-pill {
+    padding: 4px 10px;
+    background: rgba(99, 102, 241, 0.1);
+    color: var(--nebula-primary);
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 800;
 }
 
-.rank-item:hover {
-  background: rgba(255,255,255,0.05);
-  transform: translateX(4px);
+/* Genre Cloud */
+.genre-cloud {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+.genre-tag {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--glass-border);
+    padding: 8px 16px;
+    border-radius: 30px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: all 0.3s;
+}
+.genre-tag:hover {
+    background: var(--nebula-primary);
+    border-color: var(--nebula-primary);
+    transform: translateY(-3px);
+}
+.g-name { font-size: 0.8rem; font-weight: 700; color: white; text-transform: uppercase; letter-spacing: 1px; }
+.g-count { font-size: 0.7rem; font-weight: 900; color: var(--nebula-text-dim); background: rgba(0,0,0,0.2); padding: 2px 6px; border-radius: 6px; }
+.genre-tag:hover .g-count { color: white; background: rgba(255,255,255,0.2); }
+
+/* Rank specific styles */
+.rank-1 .rank-name { color: var(--nebula-accent); }
+.rank-1 .rank-idx { color: var(--nebula-accent); }
+
+@media (max-width: 1400px) {
+    .stats-grid { grid-template-columns: 1fr 1fr; }
+    .audio-dna { grid-column: span 2; }
 }
 
-.rank-info {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+@media (max-width: 1024px) {
+    .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+    .stats-container { padding: 40px; }
 }
-
-.rank-number {
-  font-family: 'Outfit', sans-serif;
-  font-weight: 900;
-  font-size: 0.8rem;
-  color: var(--spotify-text-grey);
-  width: 20px;
-}
-
-.trophy {
-  filter: drop-shadow(0 0 5px currentColor);
-}
-
-.item-name { font-weight: 700; font-size: 0.95rem; }
-.item-meta { color: var(--spotify-green); font-weight: 700; font-size: 0.8rem; opacity: 0.8; }
-
-.rank-1 .item-name { color: #b9f2ff; text-shadow: 0 0 10px rgba(185, 242, 255, 0.3); }
-.rank-2 .item-name { color: #ffd700; }
-.rank-3 .item-name { color: #cd7f32; }
-
-.highlight-cards {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
-}
-
-.h-card {
-  background: rgba(255,255,255,0.03);
-  padding: 32px 20px;
-  border-radius: 20px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  text-align: center;
-  border: 1px solid rgba(255,255,255,0.05);
-}
-
-.h-label { font-size: 0.75rem; color: var(--spotify-text-grey); font-weight: 800; letter-spacing: 1px; }
-.h-val { font-size: 2rem; font-weight: 900; }
 
 @media (max-width: 768px) {
-    .stats-view { padding: 24px; }
-    h1 { font-size: 2.5rem; }
+    .kpi-grid { grid-template-columns: 1fr; }
     .stats-grid { grid-template-columns: 1fr; }
-    .feature-row { grid-template-columns: 1fr; gap: 8px; }
-    .f-val { text-align: left; }
-    .highlight-cards { grid-template-columns: 1fr; }
+    .audio-dna { grid-column: span 1; }
+    h1 { font-size: 2.5rem; }
 }
 </style>

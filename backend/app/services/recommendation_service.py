@@ -12,53 +12,72 @@ class RecommendationService:
     ]
 
     @classmethod
-    def get_recommendations(cls, df, user_profile_tracks=None, n_recommendations=10, spotify_candidates=None):
-        """Generates hybrid recommendations with temporal weighting and Spotify candidate merging."""
+    def get_recommendations(cls, history_tracks, candidates, n_recommendations=10, spotify_recs=None):
+        """Generates hybrid recommendations using SQL models as input."""
         start_time = time.time()
         
-        if df.empty or len(df) < 2:
-            return spotify_candidates[:n_recommendations] if spotify_candidates else []
+        if not history_tracks and not spotify_recs:
+            return candidates[:n_recommendations]
             
-        # 1. Prepare candidates
-        analyzed_df = df[df["energy"] != 0].copy()
-        
-        # 2. Add temporal weighting (favor more recent additions)
-        if "played_at" in analyzed_df.columns:
-            # Scale from 1.0 (newest) to 0.7 (oldest)
-            max_t = analyzed_df["played_at"].max()
-            min_t = analyzed_df["played_at"].min()
-            if max_t > min_t:
-                analyzed_df["temp_weight"] = 0.7 + 0.3 * (analyzed_df["played_at"] - min_t) / (max_t - min_t)
-            else:
-                analyzed_df["temp_weight"] = 1.0
-        else:
-            analyzed_df["temp_weight"] = 1.0
+        # 1. Convert models to DataFrame for vector operations
+        def tracks_to_df(tracks):
+            data = []
+            for t in tracks:
+                d = {f: getattr(t, f, 0.0) or 0.0 for f in cls.FEATURES}
+                d["spotify_id"] = t.spotify_id
+                d["track_name"] = t.track_name
+                d["artist"] = t.artist
+                d["album"] = getattr(t, "album", "Unknown")
+                d["thumbnail"] = getattr(t, "thumbnail", "")
+                d["duration_ms"] = getattr(t, "duration_ms", 0)
+                d["yt_id"] = getattr(t, "yt_id", None)
+                d["stream_url"] = getattr(t, "stream_url", None)
+                data.append(d)
+            return pd.DataFrame(data)
 
-        # 3. Feature Matrix and User Profile
-        X = cls._prepare_feature_matrix(analyzed_df)
-        user_profile = cls._build_user_profile(X, user_profile_tracks)
-        
-        # 4. Similarity Computation
-        similarities = cosine_similarity(user_profile, X).flatten()
-        # Apply temporal weight
-        similarities = similarities * analyzed_df["temp_weight"].values
-        
-        # 5. Ranking
-        indices = np.argsort(similarities)[::-1]
-        local_recs = analyzed_df.iloc[indices].head(n_recommendations * 2)
-        
-        # 6. Hybrid Merge
-        if spotify_candidates:
-            # Merge and de-duplicate
-            combined = pd.concat([pd.DataFrame(spotify_candidates), local_recs]).drop_duplicates(subset=["spotify_id"])
-            # Re-rank combined by similarity if possible, else just interleave
-            final_recs = combined.head(n_recommendations)
+        # 2. Build User Profile from history
+        if history_tracks:
+            history_df = tracks_to_df(history_tracks)
+            X_hist = cls._prepare_feature_matrix(history_df)
+            user_profile = np.mean(X_hist, axis=0).reshape(1, -1)
         else:
-            final_recs = local_recs.head(n_recommendations)
+            # If no history, use spotify_recs as profile base
+            user_profile = np.zeros((1, len(cls.FEATURES)))
+
+        # 3. Score Candidates
+        candidate_df = tracks_to_df(candidates)
+        X_cand = cls._prepare_feature_matrix(candidate_df)
+        
+        similarities = cosine_similarity(user_profile, X_cand).flatten()
+        
+        # 4. Rank and combine
+        candidate_df["score"] = similarities
+        top_local = candidate_df.sort_values("score", ascending=False).head(n_recommendations)
+        
+        # Convert back to dicts
+        local_results = top_local.to_dict("records")
+        
+        # Merge with spotify_recs if available
+        if spotify_recs:
+            # Very simple merge: mix them, prioritizing variety
+            seen = set()
+            final = []
+            for i in range(max(len(local_results), len(spotify_recs))):
+                if i < len(local_results):
+                    track = local_results[i]
+                    if track["spotify_id"] not in seen:
+                        final.append(track)
+                        seen.add(track["spotify_id"])
+                if i < len(spotify_recs):
+                    track = spotify_recs[i]
+                    sid = track.get("id") or track.get("spotify_id")
+                    if sid not in seen:
+                        final.append(track)
+                        seen.add(sid)
+                if len(final) >= n_recommendations: break
+            return final[:n_recommendations]
             
-        result = final_recs.replace({np.nan: None}).to_dict(orient="records")
-        Logger.time("REC", f"Hybrid recommendations generated ({'Spotify' if spotify_candidates else 'Local'} led)", start_time)
-        return result
+        return local_results
 
     @classmethod
     def _prepare_feature_matrix(cls, df):
