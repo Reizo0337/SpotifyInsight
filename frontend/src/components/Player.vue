@@ -2,7 +2,7 @@
 import { 
   Play, Pause, SkipBack, SkipForward, 
   Repeat, Shuffle, Volume2, VolumeX,
-  ListMusic, MonitorSpeaker, Loader2
+  ListMusic, Loader2
 } from 'lucide-vue-next'
 import { ref, watch, computed, onUnmounted, onMounted } from 'vue'
 import { useMusicStore } from '../stores/musicStore'
@@ -24,6 +24,7 @@ const hasResumed = ref(false)
 const isDraggingProgress = ref(false)
 const isDraggingVolume = ref(false)
 const isQueueVisible = ref(false)
+const lastSeekTime = ref(0)
 
 // Store Mappings
 const streamLoading = computed(() => musicStore.isLoadingStream)
@@ -46,31 +47,46 @@ const formatTime = (secs: number) => {
 watch(streamUrl, (url) => {
   if (url && audioRef.value) {
     audioRef.value.src = url
+    audioRef.value.load()
     audioRef.value.volume = isMuted.value ? 0 : volume.value
     audioRef.value.playbackRate = playbackRate.value
     hasResumed.value = false
+  } else if (audioRef.value) {
+    audioRef.value.pause()
+    audioRef.value.src = ""
+    audioRef.value.load()
+    isPlaying.value = false
+    musicStore.isPlaying = false
   }
 })
 
 const tryPlay = async () => {
-  if (!audioRef.value || !audioRef.value.src) return
+  if (!audioRef.value || !audioRef.value.src || audioRef.value.src.endsWith('null')) return
+  
   try {
-    await audioRef.value.play()
-    isPlaying.value = true
-    musicStore.isPlaying = true
-    musicStore.shouldAutoResume = false
-  } catch (err) {
-    console.warn('Playback blocked:', err)
-    isPlaying.value = false
+    const playPromise = audioRef.value.play()
+    if (playPromise !== undefined) {
+      await playPromise
+      isPlaying.value = true
+      musicStore.isPlaying = true
+      musicStore.shouldAutoResume = false
+    }
+  } catch (err: any) {
+    if (err.name === 'NotAllowedError') {
+       console.warn('Nebula: Autoplay blocked. Attempting background bridge...')
+    } else {
+       console.error('Playback fail:', err)
+       isPlaying.value = false
+       musicStore.isPlaying = false
+    }
   }
 }
 
 watch(() => musicStore.isPlaying, (shouldPlay) => {
-  if (shouldPlay && !isPlaying.value) {
+  if (shouldPlay && audioRef.value?.paused) {
     tryPlay()
-  } else if (!shouldPlay && isPlaying.value) {
+  } else if (!shouldPlay && !audioRef.value?.paused) {
     audioRef.value?.pause()
-    isPlaying.value = false
   }
 })
 
@@ -89,6 +105,9 @@ watch(streamMeta, (meta) => {
 
 watch(nowPlaying, (track) => {
   if (track) {
+    if (track.duration_ms) {
+      duration.value = track.duration_ms / 1000
+    }
     musicStore.logTrackPlay(track)
   }
 }, { immediate: true })
@@ -105,9 +124,20 @@ const togglePlay = () => {
   }
 }
 
+const handleKeyDown = (e: KeyboardEvent) => {
+  if (e.code === 'Space') {
+    const active = document.activeElement as HTMLElement
+    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) {
+      return
+    }
+    e.preventDefault()
+    togglePlay()
+  }
+}
+
 const onTimeUpdate = () => {
   const a = audioRef.value
-  if (!a || isDraggingProgress.value) return
+  if (!a || isDraggingProgress.value || (Date.now() - lastSeekTime.value < 800)) return
   
   currentTime.value = a.currentTime
   if (a.duration && !isNaN(a.duration) && a.duration !== Infinity) {
@@ -117,6 +147,13 @@ const onTimeUpdate = () => {
   
   if (isPlaying.value) musicStore.updatePersistedTime(a.currentTime)
 }
+
+watch(streamLoading, (loading) => {
+  if (!loading && streamUrl.value && (musicStore.isPlaying || musicStore.shouldAutoResume)) {
+    // If we just finished loading and were supposed to be playing, fire!
+    setTimeout(tryPlay, 150)
+  }
+})
 
 const onCanPlay = () => {
   const a = audioRef.value
@@ -142,6 +179,12 @@ const onCanPlay = () => {
   }
 }
 
+const onCanPlayThrough = () => {
+  if (musicStore.isPlaying || musicStore.shouldAutoResume) {
+    tryPlay()
+  }
+}
+
 const onEnded = () => {
   if (loopMode.value === 'one' && audioRef.value) {
     audioRef.value.currentTime = 0
@@ -151,10 +194,38 @@ const onEnded = () => {
   }
 }
 
+const retryCount = ref(0)
+const onAudioError = (e: any) => {
+  const err = audioRef.value?.error
+  console.error(`Nebula Signal Lost [Code ${err?.code}]: ${err?.message}`, e)
+  
+  // If it's a network/source error and we haven't retried yet, try to refresh the link once
+  if (err?.code && [2, 4].includes(err.code) && retryCount.value < 1 && nowPlaying.value) {
+    console.log('Nebula: Attempting signal recovery...')
+    retryCount.value++
+    const t = nowPlaying.value
+    musicStore.streamTrack(t.track_name, t.artist || '', t.spotify_id || t.id)
+    return
+  }
+
+  if (isPlaying.value || musicStore.isPlaying) {
+    isPlaying.value = false
+    musicStore.isPlaying = false
+    musicStore.isLoadingStream = false
+  }
+  retryCount.value = 0 // Reset for next track
+}
+
+// Reset retry when track actually changes
+watch(nowPlaying, () => {
+  retryCount.value = 0
+})
+
 // Interaction logic
 const handleInstantSeek = (e: MouseEvent) => {
   updateSeek(e)
   if (audioRef.value && duration.value) {
+    lastSeekTime.value = Date.now()
     audioRef.value.currentTime = (displayProgress.value / 100) * duration.value
   }
 }
@@ -168,15 +239,18 @@ const startSeek = (e: MouseEvent) => {
 
 const updateSeek = (e: MouseEvent) => {
   const bar = progressTrackRef.value
-  if (!bar || !duration.value) return
+  if (!bar) return
   const rect = bar.getBoundingClientRect()
   const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
   displayProgress.value = pct * 100
-  currentTime.value = pct * duration.value
+  if (duration.value > 0) {
+    currentTime.value = pct * duration.value
+  }
 }
 
 const stopSeek = () => {
   if (audioRef.value && duration.value) {
+    lastSeekTime.value = Date.now()
     audioRef.value.currentTime = (displayProgress.value / 100) * duration.value
   }
   isDraggingProgress.value = false
@@ -222,8 +296,9 @@ const onUnload = () => {
 }
 
 onMounted(() => {
-  if (musicStore.nowPlaying) musicStore.loadPlaybackState()
+  musicStore.loadPlaybackState()
   window.addEventListener('beforeunload', onUnload)
+  window.addEventListener('keydown', handleKeyDown)
 })
 
 onUnmounted(() => {
@@ -232,6 +307,7 @@ onUnmounted(() => {
   window.removeEventListener('mousemove', updateVol)
   window.removeEventListener('mouseup', stopVol)
   window.removeEventListener('beforeunload', onUnload)
+  window.removeEventListener('keydown', handleKeyDown)
 })
 
 </script>
@@ -243,8 +319,12 @@ onUnmounted(() => {
       @timeupdate="onTimeUpdate" 
       @ended="onEnded"
       @canplay="onCanPlay"
+      @canplaythrough="onCanPlayThrough"
+      @error="onAudioError"
+      @play="isPlaying = true; musicStore.isPlaying = true"
+      @pause="isPlaying = false; musicStore.isPlaying = false"
       @loadedmetadata="onTimeUpdate"
-      crossorigin="anonymous"
+      playsinline
     />
 
     <div class="player-container glass">
@@ -270,7 +350,7 @@ onUnmounted(() => {
           
           <button @click="togglePlay" class="play-trigger" :disabled="streamLoading && !streamUrl">
             <Loader2 v-if="streamLoading && !isPlaying" :size="24" class="spin" />
-            <component v-else :is="isPlaying ? Pause : Play" :size="24" fill="white" />
+            <component v-else :is="isPlaying ? Pause : Play" :size="24" color="white" fill="white" />
           </button>
 
           <button class="icon-btn" @click="musicStore.playNext" title="Next"><SkipForward :size="20" fill="currentColor" /></button>
@@ -350,9 +430,13 @@ onUnmounted(() => {
   height: 112px;
   padding: 0 16px 16px 16px;
   z-index: 9999;
-  background: linear-gradient(to top, var(--nebula-bg) 80%, transparent);
+  background: linear-gradient(to top, var(--nebula-bg) 40%, transparent);
+  pointer-events: none; /* Let clicks pass through the padding area */
 }
 
+.player-container {
+  pointer-events: auto; /* Re-enable clicks for the actual player */
+}
 .player-container {
   height: 96px;
   border-radius: 24px;
@@ -407,8 +491,12 @@ onUnmounted(() => {
     display: flex; align-items: center; justify-content: center;
     transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
     box-shadow: 0 8px 16px rgba(99, 102, 241, 0.3);
+    border: none;
+    outline: none;
+    cursor: pointer;
 }
 .play-trigger:hover { transform: scale(1.1); box-shadow: 0 12px 24px rgba(99, 102, 241, 0.5); }
+.play-trigger:active { transform: scale(0.95); }
 .play-trigger:disabled { opacity: 0.5; cursor: default; }
 
 .icon-btn { color: var(--nebula-text-dim); transition: all 0.2s; }

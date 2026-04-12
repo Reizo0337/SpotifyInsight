@@ -16,6 +16,7 @@ const showPlaylistSubmenu = ref(false)
 const menuRef = ref<HTMLElement | null>(null)
 
 const isFavorite = computed(() => {
+  if (!store.favorites || !Array.isArray(store.favorites)) return false;
   return store.favorites.some((t: any) => t.spotify_id === props.track.spotify_id)
 })
 
@@ -90,7 +91,6 @@ onUnmounted(() => window.removeEventListener('click', closeMenu))
     <div class="column-main">
       <div class="track-thumb">
           <img :src="track.thumbnail && track.thumbnail !== 'Unknown' ? track.thumbnail : `https://api.dicebear.com/7.x/shapes/svg?seed=${track.track_name}`" alt="">
-          <div class="thumb-overlay"><Play :size="16" fill="white" /></div>
       </div>
       <div class="track-meta">
         <span class="track-name">{{ track.track_name }}</span>

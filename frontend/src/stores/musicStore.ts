@@ -1,9 +1,8 @@
 import { defineStore } from 'pinia'
 import axios from 'axios'
-import * as mockData from '../services/mockData'
 
-const API_BASE = 'http://localhost:8000/api'
-const MOCK_MODE = false 
+const API_BASE = 'http://localhost:8000/api/v1'
+const MOCK_MODE = false
 
 // Typed state for better DX
 // Typed state for better DX - placeholder for expansion
@@ -19,7 +18,9 @@ export const useMusicStore = defineStore('music', {
     favorites: [],
     playlists: [],
     searchResults: [],
-    
+    topArtists: [],
+    topTracks: [],
+
     // Playback
     nowPlaying: null,
     queue: [],
@@ -31,12 +32,15 @@ export const useMusicStore = defineStore('music', {
     volume: Number(localStorage.getItem('m-volume')) || 0.7,
     playbackRate: Number(localStorage.getItem('m-speed')) || 1.0,
     persistedTime: Number(localStorage.getItem('m-time')) || 0,
-    
+
     // UI / Loading
     isLoading: false,
     isLoadingStream: false,
+    isCreateModalOpen: false,
+    isOnboardingModalOpen: false,
     streamUrl: null,
     streamMeta: null,
+    remotePlaylists: [],
     isReload: true,
     shouldAutoResume: false,
     isCreateModalOpen: false,
@@ -45,7 +49,9 @@ export const useMusicStore = defineStore('music', {
     streamCache: new Map(),
     preloadedNext: null,
     isPreloading: false,
-    isSyncing: false
+    isRecommendationsLoading: false,
+    isSyncing: false,
+    syncStatus: 'idle'
   }),
 
   getters: {
@@ -58,7 +64,7 @@ export const useMusicStore = defineStore('music', {
   actions: {
     async _apiCall(endpoint: string, params = {}, method: 'get' | 'post' | 'delete' = 'get', body?: any, mock?: any) {
       if (MOCK_MODE && mock !== undefined) return mock
-      
+
       const publicEndpoints = ['/auth/login', '/auth/register']
       if (!this.accessToken && !publicEndpoints.includes(endpoint)) {
         // Strictly block all unauthorized transmissions for cosmic safety
@@ -68,11 +74,11 @@ export const useMusicStore = defineStore('music', {
       try {
         const url = `${API_BASE}${endpoint}`
         const config: any = { params, headers: {} }
-        
+
         if (this.accessToken) {
           config.headers['Authorization'] = `Bearer ${this.accessToken}`
         }
-        
+
         let res;
         if (method === 'post') {
           res = await axios.post(url, body, config)
@@ -95,7 +101,7 @@ export const useMusicStore = defineStore('music', {
       const form = new FormData()
       form.append('username', credentials.username)
       form.append('password', credentials.password)
-      
+
       const data = await this._apiCall('/auth/login', {}, 'post', form)
       if (data && data.access_token) {
         this.accessToken = data.access_token
@@ -128,18 +134,113 @@ export const useMusicStore = defineStore('music', {
 
     async fetchAllData() {
       // Re-route to modular endpoints
-      const [u, s, r, h, st] = await Promise.all([
+      const [u, h, st] = await Promise.all([
         this._apiCall('/auth/me'),
-        this._apiCall('/music/stats'),
-        this._apiCall('/music/recommendations', { limit: 20 }),
         this._apiCall('/music/history', { limit: 50 }),
         this._apiCall('/music/status')
       ])
       if (u) this.userProfile = u
-      if (s) this.stats = s
-      if (r) this.recommendations = r
       if (h) this.recentTracks = h
-      if (st) this.isSpotifyConnected = st.connected
+      
+      // Load intelligence signals
+      await this.fetchStats()
+      
+      // Standalone async recommendation fetch
+      this.fetchRecommendations()
+
+      if (st) {
+        this.isSpotifyConnected = st.connected
+        const syncStatus = await this._apiCall('/music/sync/status')
+        if (syncStatus) this.syncStatus = syncStatus.status
+
+        // Trigger onboarding if not done
+        if (this.isSpotifyConnected && !this.userProfile?.preferences?.onboarding_done) {
+          this.isOnboardingModalOpen = true
+        }
+      }
+
+      // Parallel fetch of library components
+      await Promise.all([
+        this.fetchPlaylists(),
+        this.fetchFavorites(),
+        this.fetchTopData(),
+        this.fetchSpotifyPlaylists()
+      ])
+    },
+
+    async fetchStats(wrapped = false) {
+      this.isLoading = true
+      try {
+        const data = await this._apiCall('/music/stats', { wrapped })
+        if (data) this.stats = data
+        return data
+      } finally {
+        this.isLoading = false
+      }
+    },
+
+    async fetchRecommendations() {
+      this.isRecommendationsLoading = true
+      try {
+        const resp = await this._apiCall('/music/recommendations', { limit: 20 })
+        if (!resp) return
+
+        if (resp.job_id) {
+          let completed = false
+          while (!completed) {
+            const status = await this._apiCall(`/playlists/import/status/${resp.job_id}`)
+            if (status && status.status === 'completed' && status.result?.tracks) {
+              completed = true
+              const trackIds = status.result.tracks.join(',')
+              const fullTracks = await this._apiCall('/music/tracks', { ids: trackIds })
+              if (fullTracks) this.recommendations = fullTracks
+            } else if (!status || status.status === 'failed') break
+            
+            if (!completed) await new Promise(r => setTimeout(r, 2000))
+          }
+        } else if (Array.isArray(resp)) {
+          this.recommendations = resp
+        }
+      } finally {
+        this.isRecommendationsLoading = false
+      }
+    },
+
+    async fetchSpotifyPlaylists() {
+      this.isLoading = true
+      try {
+        const res = await this._apiCall('/music/spotify/playlists')
+        if (res) this.remotePlaylists = res
+      } finally {
+        this.isLoading = false
+      }
+    },
+
+    async completeOnboarding() {
+      await this._apiCall('/music/onboarding/complete', {}, 'post')
+      if (this.userProfile) {
+        this.userProfile.preferences = { ...this.userProfile.preferences, onboarding_done: true }
+      }
+      this.isOnboardingModalOpen = false
+    },
+
+    async resetOnboarding() {
+      await this._apiCall('/music/onboarding/reset', {}, 'post')
+      if (this.userProfile) {
+        this.userProfile.preferences = { ...this.userProfile.preferences, onboarding_done: false }
+      }
+      this.isOnboardingModalOpen = true
+      // Refresh playlists just in case
+      await this.fetchSpotifyPlaylists()
+    },
+
+    async fetchTopData() {
+      const [artists, tracks] = await Promise.all([
+        this._apiCall('/music/top/artists', { limit: 12 }),
+        this._apiCall('/music/top/tracks', { limit: 12 })
+      ])
+      if (artists) this.topArtists = artists
+      if (tracks) this.topTracks = tracks
     },
 
     async connectSpotify() {
@@ -223,9 +324,9 @@ export const useMusicStore = defineStore('music', {
           shuffledQueue: p.shuffledQueue || [],
           loopMode: p.loopMode || 'off'
         })
-        
-        // Auto-resume if it was a reload and was playing
-        if (this.isReload && p.wasPlaying) {
+
+        // Auto-resume if it was playing before session ended
+        if (p.wasPlaying) {
           this.shouldAutoResume = true
           this.isPlaying = true
         }
@@ -272,14 +373,24 @@ export const useMusicStore = defineStore('music', {
       this.isPlaying = true // User explicitly started a track
       if (contextQueue) {
         this.queue = [...contextQueue]
-        this.currentIndex = contextQueue.findIndex(t => 
-          (t.spotify_id && t.spotify_id === track.spotify_id) || 
-          (t.id && t.id === track.id) || 
+        this.currentIndex = contextQueue.findIndex(t =>
+          (t.spotify_id && t.spotify_id === track.spotify_id) ||
+          (t.id && t.id === track.id) ||
           (t.track_name === track.track_name && t.artist === track.artist)
         )
         if (this.isShuffle) this.shuffleQueue()
       }
-      if (!MOCK_MODE && track?.track_name) {
+
+      // INSTANT SIGNAL: If the object already contains a valid stream, use it!
+      if (track?.stream_url) {
+        const fullStreamUrl = track.stream_url.startsWith('/')
+          ? API_BASE.split('/api')[0] + track.stream_url
+          : track.stream_url
+        this.streamUrl = fullStreamUrl
+        this.streamMeta = { video_id: track.yt_id, cached: 'object' }
+        this.isLoadingStream = false
+        this.preloadNext()
+      } else if (!MOCK_MODE && track?.track_name) {
         this.streamTrack(track.track_name, track.artist || '', track.spotify_id || track.id)
       }
       this.savePlaybackState(true)
@@ -334,14 +445,16 @@ export const useMusicStore = defineStore('music', {
 
 
     async fetchSpotifyPlaylistInfo(url: string) {
-      return await this._apiCall(`/spotify/playlist-info?url=${encodeURIComponent(url)}`)
+      return await this._apiCall(`/playlists/spotify-info?url=${encodeURIComponent(url)}`)
     },
 
     async importSpotifyPlaylist(playlistId: string, name: string, targetPlaylistId: string | null = null) {
-      await this._apiCall('/spotify/playlists/import', {}, 'post', { 
-        playlist_id: playlistId, 
+      // Re-route to the NEW playlists import (using SSE path for consistency if needed, 
+      // but for now keeping it as a post if we add a non-stream version or just use music.py/sync logic)
+      await this._apiCall('/playlists/import/stream', {
+        playlist_id: playlistId,
         name,
-        target_playlist_id: targetPlaylistId 
+        target_playlist_id: targetPlaylistId || ''
       })
       await this.fetchPlaylists()
     },
@@ -390,7 +503,7 @@ export const useMusicStore = defineStore('music', {
       try {
         const resp = await this._apiCall(`/playlists/${playlistId}/tracks`, {}, 'post', track)
         if (resp && resp.status === 'success') {
-          const pl = this.playlists.find(p => p.id === playlistId)
+          const pl = this.playlists.find((p: { id: string }) => p.id === playlistId)
           if (pl && !pl.tracks.includes(track.spotify_id)) {
             pl.tracks.push(track.spotify_id)
           }
@@ -406,7 +519,7 @@ export const useMusicStore = defineStore('music', {
       try {
         const resp = await this._apiCall(`/playlists/${playlistId}/tracks/${spotifyId}`, {}, 'delete')
         if (resp && resp.status === 'success') {
-          const pl = this.playlists.find(p => p.id === playlistId)
+          const pl = this.playlists.find((p: { id: string }) => p.id === playlistId)
           if (pl) {
             pl.tracks = pl.tracks.filter((id: string) => id !== spotifyId)
           }
@@ -433,7 +546,19 @@ export const useMusicStore = defineStore('music', {
       this.currentIndex = index
       const t = this.currentQueue[index]
       this.nowPlaying = t
-      this.streamTrack(t.track_name, t.artist || '', t.spotify_id || t.id)
+
+      // INSTANT SIGNAL: Shift frequencies immediately if stream is available
+      if (t?.stream_url) {
+        const fullStreamUrl = t.stream_url.startsWith('/')
+          ? API_BASE.split('/api')[0] + t.stream_url
+          : t.stream_url
+        this.streamUrl = fullStreamUrl
+        this.streamMeta = { video_id: t.yt_id, cached: 'object' }
+        this.isLoadingStream = false
+        this.preloadNext()
+      } else {
+        this.streamTrack(t.track_name, t.artist || '', t.spotify_id || t.id)
+      }
       this.savePlaybackState(true) // We are definitely switching to play
     },
 
@@ -470,10 +595,20 @@ export const useMusicStore = defineStore('music', {
       if (!this.accessToken) return // Block playback if unauthorized
       const trackId = id || name
       this.isLoadingStream = true
-      
+
+      // 0. Instant object check (fallback)
+      if (this.nowPlaying?.stream_url && (this.nowPlaying?.spotify_id === id || this.nowPlaying?.id === id)) {
+        const fullStreamUrl = this.nowPlaying.stream_url.startsWith('/')
+          ? API_BASE.split('/api')[0] + this.nowPlaying.stream_url
+          : this.nowPlaying.stream_url
+        this.streamUrl = fullStreamUrl
+        this.isLoadingStream = false
+        return
+      }
+
       // 1. Preload hit?
       if (this.preloadedNext && this.preloadedNext.trackId === trackId) {
-        this.streamUrl = this.preloadedNext.data.url // Backend uses "url"
+        this.streamUrl = this.preloadedNext.data.stream_url
         this.streamMeta = this.preloadedNext.data
         this.isLoadingStream = false
         this.preloadedNext = null
@@ -484,7 +619,7 @@ export const useMusicStore = defineStore('music', {
       // 2. Local session cache hit (30 min validity)
       const cached = this.streamCache.get(trackId)
       if (cached && (Date.now() - cached.timestamp < 30 * 60 * 1000)) {
-        this.streamUrl = cached.data.url
+        this.streamUrl = cached.data.stream_url
         this.streamMeta = cached.data
         this.isLoadingStream = false
         this.preloadNext()
@@ -494,14 +629,14 @@ export const useMusicStore = defineStore('music', {
       // 3. Remote fetch with race-condition protection
       this.streamUrl = null
       const currentTrackAtStart = this.nowPlaying?.spotify_id || this.nowPlaying?.id || this.nowPlaying?.track_name
-      
+
       const params: any = {}
       if (id) params.spotify_id = id
       if (name) params.track_name = name
       if (artist) params.artist = artist
 
       const data = await this._apiCall('/music/stream', params)
-      
+
       // Only update if we haven't switched to another track during the wait
       const currentTrackNow = this.nowPlaying?.spotify_id || this.nowPlaying?.id || this.nowPlaying?.track_name
       if (data && currentTrackAtStart === currentTrackNow) {
@@ -516,7 +651,7 @@ export const useMusicStore = defineStore('music', {
     async preloadNext() {
       const q = this.currentQueue
       if (!q || !q.length || this.currentIndex === -1 || this.isPreloading) return
-      
+
       const nextIdx = (this.currentIndex + 1) % q.length
       if (nextIdx === 0 && this.loopMode === 'off') return
 

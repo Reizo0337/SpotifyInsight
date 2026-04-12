@@ -13,14 +13,7 @@ from ..core.spotify_auth import get_auth_manager
 
 router = APIRouter()
 
-class UserCreate(BaseModel):
-    username: str
-    password: str
-    email: Optional[EmailStr] = None
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
+from ..schemas import UserCreate, Token, UserProfile
 
 @router.post("/register", response_model=Token)
 async def register(user_in: UserCreate, db: Session = Depends(get_db)):
@@ -57,7 +50,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
     access_token = create_access_token(data={"sub": user.username})
     return {"access_token": access_token, "token_type": "bearer"}
 
-@router.get("/me")
+@router.get("/me", response_model=UserProfile)
 async def get_me(current_user: User = Depends(get_current_user)):
     return {
         "id": current_user.id,

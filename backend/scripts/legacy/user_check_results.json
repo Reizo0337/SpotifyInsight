@@ -1,0 +1,18 @@
+[
+  {
+    "id": 1,
+    "username": "geani",
+    "email": "geanyvlad26@gmail.com",
+    "hash": "$2b$12$T6KVn.JuJSGCCHOD0qtPqOa30uDXj1hg9EesYwGYZUJo0tg71PAXq",
+    "email_len": 21,
+    "hash_len": 60
+  },
+  {
+    "id": 2,
+    "username": "testuser",
+    "email": "test@example.com",
+    "hash": "$2b$12$C4ng3o05IgGsOZlBZHe.IO7B54A2XUaNISsHfHsnWrS9BaLF0DZFW",
+    "email_len": 16,
+    "hash_len": 60
+  }
+]

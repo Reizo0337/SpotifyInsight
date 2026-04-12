@@ -65,7 +65,8 @@ const createNewPlaylist = async () => {
           
           <RouterLink v-for="playlist in musicStore.playlists" :key="playlist.id" :to="'/playlist/' + playlist.id" class="list-item" active-class="active">
             <div class="thumb playlist-thumb">
-                <Library :size="14" />
+                <img v-if="playlist.thumbnail" :src="playlist.thumbnail" class="thumb-img" />
+                <Library v-else :size="14" />
             </div>
             <div class="details">
               <p class="name">{{ playlist.name }}</p>
@@ -82,6 +83,9 @@ const createNewPlaylist = async () => {
                 :disabled="musicStore.isSyncing">
           <RefreshCw :size="18" :class="{ 'spin': musicStore.isSyncing }" />
         </button>
+        <button v-if="musicStore.isSpotifyConnected" class="footer-icon" @click="musicStore.resetOnboarding" title="Reiniciar Setup">
+          <Layers :size="18" />
+        </button>
         <button class="footer-icon"><Bell :size="18" /></button>
         <button class="footer-icon"><Settings :size="18" /></button>
         
@@ -97,7 +101,7 @@ const createNewPlaylist = async () => {
 .sidebar-nebula {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
   padding: 12px;
   z-index: 100;
 }
@@ -290,6 +294,13 @@ const createNewPlaylist = async () => {
     color: var(--nebula-text-muted);
 }
 
+.thumb-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 10px;
+}
+
 .details .name {
     font-size: 0.9rem;
     font-weight: 600;
@@ -304,6 +315,7 @@ const createNewPlaylist = async () => {
 .sidebar-footer {
     padding-top: 20px;
     margin-top: 20px;
+    margin-bottom: 70px; /* SPACE FOR PLAYER */
     border-top: 1px solid var(--glass-border);
     display: flex;
     align-items: center;

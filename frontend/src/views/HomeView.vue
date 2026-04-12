@@ -40,7 +40,7 @@ const userHistory = computed(() => musicStore.recentTracks)
         </div>
         <h1 class="greeting">Bienvenido, {{ musicStore.userProfile?.username || 'Viajero' }}</h1>
         <p class="summary">
-          Tu universo musical está listo. Hemos analizado <span class="highlight">{{ musicStore.stats?.total_tracks || '0' }} señales</span> únicas en tu trayectoria estelar.
+          Tu universo musical está listo. Hemos analizado <span class="highlight">{{ musicStore.stats?.kpis?.total_plays || '0' }} señales</span> únicas en tu trayectoria estelar.
         </p>
         
 
@@ -49,7 +49,7 @@ const userHistory = computed(() => musicStore.recentTracks)
             <Sparkles :size="20" />
             <span>Conectar Spotify</span>
           </button>
-          <button v-else @click="handleSync" class="btn-nebula primary" :disabled="musicStore.isSyncing">
+          <button v-else-if="musicStore.syncStatus !== 'completed'" @click="handleSync" class="btn-nebula primary" :disabled="musicStore.isSyncing">
             <Play v-if="!musicStore.isSyncing" :size="20" fill="currentColor" />
             <RefreshCcw v-else :class="{ 'spinning': musicStore.isSyncing }" :size="20" />
             <span>{{ musicStore.isSyncing ? 'Analizando...' : 'Sincronizar Spotify' }}</span>
@@ -84,52 +84,81 @@ const userHistory = computed(() => musicStore.recentTracks)
           <div class="stats-carousel">
             <StatCard
               title="Energía"
-              :value="Math.round((musicStore.stats?.avg_energy || 0) * 100) + '%'"
-              :percent="(musicStore.stats?.avg_energy || 0) * 100"
+              :value="Math.round((musicStore.stats?.dna?.energy || 0) * 100) + '%'"
+              :percent="(musicStore.stats?.dna?.energy || 0) * 100"
               :icon="Zap"
               color="var(--nebula-primary)"
             />
             <StatCard
               title="Ritmo"
-              :value="Math.round((musicStore.stats?.avg_danceability || 0) * 100) + '%'"
-              :percent="(musicStore.stats?.avg_danceability || 0) * 100"
+              :value="Math.round((musicStore.stats?.dna?.danceability || 0) * 100) + '%'"
+              :percent="(musicStore.stats?.dna?.danceability || 0) * 100"
               :icon="Activity"
               color="var(--nebula-accent)"
             />
             <StatCard
               title="Vibe"
-              :value="Math.round((musicStore.stats?.avg_valence || 0) * 100) + '%'"
-              :percent="(musicStore.stats?.avg_valence || 0) * 100"
+              :value="Math.round((musicStore.stats?.dna?.valence || 0) * 100) + '%'"
+              :percent="(musicStore.stats?.dna?.valence || 0) * 100"
               :icon="Wind"
               color="#818cf8"
             />
+            
+            <div class="stat-card-nebula glass more-card" @click="router.push('/stats')">
+                <div class="icon-orb">
+                    <ChevronRight :size="24" />
+                </div>
+                <span class="label">Ver más Análisis</span>
+            </div>
           </div>
         </section>
 
         <div class="split-content">
           <section class="tracks-card glass">
             <div class="card-header">
-              <h3>Sugerencias Estelares</h3>
-              <span class="tag">NEBULA AI</span>
+              <div class="header-left">
+                <h3>Sugerencias Estelares</h3>
+                <span class="tag">NEBULA AI</span>
+              </div>
+              <button class="text-btn" @click="router.push('/search')">
+                Ver más <ChevronRight :size="16" />
+              </button>
             </div>
             <div class="track-container">
-              <TrackRow 
-                v-for="(track, index) in musicStore.recommendations.slice(0, 6)" 
-                :key="track.spotify_id" 
-                :track="track" 
-                :index="Number(index) + 1"
-                :contextQueue="musicStore.recommendations.slice(0, 6)"
-              />
-              <div v-if="musicStore.recommendations.length === 0" class="empty-state">
-                Inicia la sincronización para recibir sugerencias
+              <!-- Loading State for AI Jobs -->
+              <div v-if="musicStore.isRecommendationsLoading" class="ai-loading-state">
+                <div class="ai-orb-pulse"></div>
+                <div class="ai-meta">
+                  <Sparkles :size="20" class="spin-slow" />
+                  <span>Consultando el oráculo musical de Nebula...</span>
+                </div>
               </div>
+
+              <template v-else>
+                <TrackRow 
+                  v-for="(track, index) in musicStore.recommendations.slice(0, 6)" 
+                  :key="track.spotify_id" 
+                  :track="track" 
+                  :index="Number(index) + 1"
+                  :contextQueue="musicStore.recommendations.slice(0, 6)"
+                />
+                <div v-if="musicStore.recommendations.length === 0" class="empty-state">
+                  <Activity :size="24" />
+                  <p>Inicia la sincronización para recibir sugerencias inteligentes</p>
+                </div>
+              </template>
             </div>
           </section>
 
           <section class="tracks-card glass">
             <div class="card-header">
-              <h3>Trayectoria Reciente</h3>
-              <span class="tag">REAL TIME</span>
+              <div class="header-left">
+                <h3>Trayectoria Reciente</h3>
+                <span class="tag">REAL TIME</span>
+              </div>
+              <button class="text-btn" @click="router.push('/stats')">
+                Ver más <ChevronRight :size="16" />
+              </button>
             </div>
             <div class="track-container">
               <TrackRow 
@@ -218,12 +247,13 @@ const userHistory = computed(() => musicStore.recentTracks)
   font-size: 4.5rem;
   font-weight: 800;
   letter-spacing: -3px;
-  margin-bottom: 20px;
+  margin-bottom: 24px;
   background: linear-gradient(135deg, #fff 0%, #a5b4fc 100%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  line-height: 1.1;
+  line-height: 1.2;
+  padding: 5px 0;
 }
 
 .summary {
@@ -267,6 +297,17 @@ const userHistory = computed(() => musicStore.recentTracks)
 .btn-nebula.secondary:hover {
     background: rgba(255, 255, 255, 0.06);
     transform: translateY(-4px);
+}
+
+.stats-carousel {
+  display: flex;
+  gap: 20px;
+  width: 100%;
+
+}
+
+.stats-carousel::-webkit-scrollbar {
+  display: none;
 }
 
 /* Cinematic Visual */
@@ -324,10 +365,118 @@ const userHistory = computed(() => musicStore.recentTracks)
     gap: 60px;
 }
 
+.more-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    cursor: pointer;
+    min-width: 200px;
+    background: rgba(255, 255, 255, 0.02);
+    border-style: dashed;
+}
+
+.more-card:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: var(--nebula-primary);
+}
+
+.more-card .icon-orb {
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    background: rgba(99, 102, 241, 0.1);
+    color: var(--nebula-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.more-card .label {
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: var(--nebula-text-dim);
+}
+
+.section-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    margin-bottom: 32px;
+}
+
 .section-title {
-    font-size: 2rem;
+    font-size: 2.2rem;
+    font-weight: 800;
+    letter-spacing: -1.5px;
+    background: linear-gradient(135deg, #fff 0%, #a5b4fc 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.tracks-card {
+    padding: 32px;
+    border-radius: 32px;
+    display: flex;
+    flex-direction: column;
+    min-height: 500px;
+}
+
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 30px;
+}
+
+.header-left {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.card-header h3 {
+    font-size: 1.8rem;
     font-weight: 800;
     letter-spacing: -1px;
+    color: white;
+}
+
+.tag {
+    background: rgba(99, 102, 241, 0.1);
+    color: var(--nebula-primary);
+    padding: 6px 14px;
+    border-radius: 100px;
+    font-size: 0.65rem;
+    font-weight: 800;
+    letter-spacing: 1.5px;
+    border: 1px solid rgba(99, 102, 241, 0.2);
+    width: fit-content;
+    text-transform: uppercase;
+}
+
+.text-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--nebula-text-dim);
+    font-weight: 700;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 10px 20px;
+    border-radius: 14px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid transparent;
+}
+
+.text-btn:hover {
+    color: white;
+    background: rgba(255,255,255,0.08);
+    border-color: rgba(255,255,255,0.1);
+    transform: translateY(-2px);
 }
 
 .split-content {
@@ -335,6 +484,57 @@ const userHistory = computed(() => musicStore.recentTracks)
     grid-template-columns: 1fr 1fr;
     gap: 40px;
 }
+
+.ai-loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 0;
+  gap: 20px;
+  position: relative;
+}
+
+.ai-orb-pulse {
+  width: 60px;
+  height: 60px;
+  background: var(--nebula-primary);
+  border-radius: 50%;
+  filter: blur(20px);
+  opacity: 0.4;
+  animation: orb-pulse 2s ease-in-out infinite;
+}
+
+.ai-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--nebula-text-dim);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.spin-slow {
+  animation: spin 3s linear infinite;
+}
+
+@keyframes orb-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.3; }
+  50% { transform: scale(1.5); opacity: 0.6; }
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  gap: 16px;
+  color: var(--nebula-text-muted);
+  text-align: center;
+}
+
+.empty-state p { font-size: 0.9rem; max-width: 250px; }
 
 .spinning { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

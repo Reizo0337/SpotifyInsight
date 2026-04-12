@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import Optional
 
 class TrackBase(BaseModel):
     spotify_id: str
@@ -24,18 +24,7 @@ class TrackFeatures(TrackBase):
     key: int = 0
     mode: int = 0
 
-class UserProfile(BaseModel):
-    user_id: str
-    user_name: str
-    stats: Dict[str, Any]
-
 class RecommendationRequest(BaseModel):
     mode: str = "vibe" # "vibe", "discovery", "similar"
     limit: int = 10
     song_query: Optional[str] = None
-
-class SyncStatus(BaseModel):
-    status: str
-    new_tracks: int
-    total_library: int
-    time_taken: str

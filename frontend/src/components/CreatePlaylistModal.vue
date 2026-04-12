@@ -23,7 +23,6 @@ const importDoneCount = ref(0)
 const importPhaseLabel = ref('')
 
 const closeModal = () => {
-  if (importState.value === 'importing') return // block close while importing
   musicStore.isCreateModalOpen = false
   playlistName.value = ''
   spotifyUrl.value = ''
@@ -76,67 +75,62 @@ const handleImport = async () => {
   importTotal.value = 0
   importCurrentTrack.value = ''
   importMessage.value = 'Iniciando importación...'
-  importPhaseLabel.value = ''
+  importPhaseLabel.value = 'Delegando misión al Samurái... Puedes cerrar esta ventana.'
 
   const pid = playlistPreview.value.id
-  const name = encodeURIComponent(playlistPreview.value.name)
-  const targetId = encodeURIComponent(selectedTargetId.value || '')
-  const url = `http://localhost:8000/api/spotify/playlists/import/stream?playlist_id=${pid}&name=${name}&target_playlist_id=${targetId}`
+  const name = playlistPreview.value.name
+  const targetId = selectedTargetId.value
+  const token = localStorage.getItem('nebula-token')
+  importTotal.value = playlistPreview.value.track_count || playlistPreview.value.total || 0
 
-  const evtSource = new EventSource(url)
-
-  evtSource.onmessage = (e) => {
-    const msg = JSON.parse(e.data)
-    switch (msg.type) {
-      case 'playlist_created':
-        importMessage.value = `Playlist "${msg.name}" creada`
-        break
-      case 'status':
-        importMessage.value = msg.message
-        break
-      case 'total':
-        importTotal.value = msg.count
-        importMessage.value = `Encontradas ${msg.count} canciones — obteniendo metadatos...`
-        break
-      case 'analyzing':
-        importCurrentTrack.value = `${msg.artist} - ${msg.track}`
-        if (importTotal.value > 0) {
-          importProgress.value = Math.round(((msg.current - 1) / importTotal.value) * 100)
-        }
-        break
-      case 'phase2_start':
+  try {
+    // 1. Start Job
+    const startResp = await fetch(`http://localhost:8000/api/v1/playlists/import/start`, {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ url: pid, name: name, target_playlist_id: targetId })
+    })
+    
+    const { job_id } = await startResp.json()
+    
+    // 2. Poll Status
+    let completed = false
+    while (!completed) {
+      const statusResp = await fetch(`http://localhost:8000/api/v1/playlists/import/status/${job_id}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const status = await statusResp.json()
+      
+      importMessage.value = status.message || 'Procesando...'
+      importProgress.value = status.progress || 0
+      
+      // Update Phase visualization based on progress logic from worker.py
+      if (importProgress.value >= 20) {
         importPhase.value = 2
-        importProgress.value = 0
-        importMessage.value = msg.message
-        importPhaseLabel.value = 'Buscando en YouTube...'
-        break
-      case 'progress':
-        if (importTotal.value > 0) {
-          importProgress.value = Math.round((msg.current / importTotal.value) * 100)
-        }
-        importPhaseLabel.value = msg.phase_label || ''
-        break
-      case 'done':
-        importDoneCount.value = msg.track_count
-        importProgress.value = 100
-        importState.value = 'done'
-        evtSource.close()
-        musicStore.fetchPlaylists()
-        break
-      case 'error':
-        importMessage.value = msg.message
-        importState.value = 'error'
-        evtSource.close()
-        break
-    }
-  }
+      } else {
+        importPhase.value = 1
+      }
 
-  evtSource.onerror = () => {
-    if (importState.value !== 'done') {
-      importMessage.value = 'Error de conexión con el servidor'
-      importState.value = 'error'
+      if (status.status === 'completed') {
+          completed = true
+          importProgress.value = 100
+          importState.value = 'done'
+          importDoneCount.value = status.result?.count || 0
+          musicStore.fetchPlaylists()
+      } else if (status.status === 'failed') {
+          importMessage.value = status.error || 'Error desconocido'
+          importState.value = 'error'
+          completed = true
+      }
+      
+      if (!completed) await new Promise(r => setTimeout(r, 1500))
     }
-    evtSource.close()
+  } catch (e: any) {
+    importMessage.value = e.message || 'Error de conexión'
+    importState.value = 'error'
   }
 }
 
@@ -241,7 +235,7 @@ watch(() => musicStore.isCreateModalOpen, (isOpen) => {
                 </p>
                 <div class="modal-footer">
                   <button class="cancel-btn" @click="cancelImport">Cancelar</button>
-                  <button class="confirm-btn" @click="handleImport">Sí, importar</button>
+                  <button class="confirm-btn primary" @click="handleImport">Confirmar Importación</button>
                 </div>
               </div>
 
@@ -270,7 +264,7 @@ watch(() => musicStore.isCreateModalOpen, (isOpen) => {
                     <div v-else class="preview-thumb-fallback"><Music :size="32" /></div>
                     <div class="preview-info">
                       <h3>{{ playlistPreview.name }}</h3>
-                      <p>{{ playlistPreview.track_count }} canciones • {{ playlistPreview.owner }}</p>
+                      <p>{{ playlistPreview.track_count || playlistPreview.total || 0 }} canciones • {{ playlistPreview.owner || 'Autor de Spotify' }}</p>
                     </div>
                   </div>
 
@@ -285,9 +279,9 @@ watch(() => musicStore.isCreateModalOpen, (isOpen) => {
                   </div>
 
                   <div class="modal-footer">
-                    <button class="cancel-btn" @click="playlistPreview = null">Cargar otra</button>
-                    <button class="confirm-btn" @click="confirmImport">
-                      {{ selectedTargetId ? '🔀 Unir Playlist' : '⬇️ Importar Todo' }}
+                    <button class="secondary-btn" @click="playlistPreview = null">Cargar otro enlace</button>
+                    <button class="confirm-btn primary" @click="confirmImport">
+                      {{ selectedTargetId ? 'Unificar en Playlist' : 'Importar todo el contenido' }}
                     </button>
                   </div>
                 </div>
@@ -463,17 +457,55 @@ watch(() => musicStore.isCreateModalOpen, (isOpen) => {
 }
 
 .confirm-btn {
-  font-size: 0.9rem;
-  font-weight: 700;
-  color: black;
-  background: var(--spotify-green);
+  font-size: 0.75rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: white;
+  background: rgba(255, 255, 255, 0.05);
   padding: 12px 32px;
-  border-radius: 500px;
-  transition: transform 0.2s, background 0.2s;
+  border-radius: 12px;
+  border: 1px solid var(--glass-border);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.confirm-btn:hover:not(:disabled) { transform: scale(1.04); background: #1fdf64; }
-.confirm-btn:disabled { background: #535353; color: #b3b3b3; cursor: not-allowed; }
+.confirm-btn.primary {
+  background: var(--nebula-primary);
+  border: none;
+  box-shadow: 0 0 20px rgba(99, 102, 241, 0.3);
+  width: 100%;
+}
+
+.confirm-btn.primary:hover:not(:disabled) {
+  background: var(--nebula-accent);
+  box-shadow: 0 0 30px rgba(99, 102, 241, 0.5);
+  transform: translateY(-2px);
+}
+
+.secondary-btn {
+  font-size: 0.75rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--nebula-text-dim);
+  background: transparent;
+  padding: 12px 24px;
+  border-radius: 12px;
+  border: 1px solid var(--glass-border);
+  transition: all 0.3s;
+}
+
+.secondary-btn:hover {
+  color: white;
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.confirm-btn:disabled { 
+  opacity: 0.3;
+  cursor: not-allowed;
+  filter: grayscale(1);
+}
 
 /* Confirm dialog */
 .confirm-view {

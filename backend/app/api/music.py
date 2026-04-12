@@ -1,204 +1,588 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Request
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List, Optional
+import time
+import asyncio
+import urllib.parse
+import httpx
+from fastapi.responses import StreamingResponse
+import json
+import uuid
+
 from ..db.session import get_db
 from ..db.models import Track, History, User, Favorite
 from ..core.auth_utils import get_current_user
 from ..services.spotify_service import SpotifyService
 from ..services.ytmusic_service import YTMusicService
-import time
-
 from ..services.recommendation_service import RecommendationService
-import pandas as pd
-import numpy as np
-
+from ..services.analytics_service import AnalyticsService
 from ..core.logging import Logger
-from fastapi.responses import StreamingResponse
-import requests
-import urllib.parse
+from ..schemas import TrackBase, TrackFeatures, SyncStatus
 
 router = APIRouter()
 
+def nebulize_track(t: any):
+    """Wraps a database track object OR dict with security-cleared signals and metadata."""
+    if not t: return None
+    
+    # Extract raw data
+    if hasattr(t, "spotify_id"): # SQL Model
+        sid = t.spotify_id
+        name = t.track_name
+        artist = t.artist or "Unknown"
+        album = t.album or "Unknown"
+        thumb = t.thumbnail or ""
+        duration = t.duration_ms or 0
+        pop = t.popularity or 0
+        yid = t.yt_id
+        s_url = t.stream_url
+        expired = (t.stream_expiry and t.stream_expiry < time.time() + 120)
+    else: # Dictionary
+        sid = t.get("spotify_id") or t.get("id")
+        name = t.get("track_name") or t.get("name", "Unknown")
+        artist = t.get("artist") or "Unknown"
+        album = t.get("album") or "Unknown"
+        thumb = t.get("thumbnail") or ""
+        duration = t.get("duration_ms") or t.get("duration", 0)
+        pop = t.get("popularity", 0)
+        yid = t.get("yt_id")
+        s_url = t.get("stream_url")
+        expired = False # Dicts from search are usually fresh or empty
+
+    if not thumb:
+        thumb = f"https://api.dicebear.com/7.x/shapes/svg?seed={sid or name}"
+
+    stream = None
+    if s_url and not expired:
+        # Only proxy if it looks like a direct URL (contains googlevideo or starts with http)
+        if s_url.startswith("http") and "proxy_stream" not in s_url:
+            quoted_url = urllib.parse.quote(s_url)
+            stream = f"http://localhost:8000/api/v1/music/proxy_stream?url={quoted_url}"
+        else:
+            stream = s_url
+        
+    return {
+        "spotify_id": sid,
+        "track_name": name,
+        "artist": artist,
+        "album": album,
+        "thumbnail": thumb,
+        "duration_ms": duration,
+        "popularity": pop,
+        "yt_id": yid,
+        "stream_url": stream,
+    }
+
 @router.get("/tracks")
-async def get_tracks(ids: str, db: Session = Depends(get_db)):
+async def get_tracks_by_ids(ids: str, db: Session = Depends(get_db)):
     """Fetch track details for multiple IDs from the SQL database."""
     if not ids: return []
     id_list = [id.strip() for id in ids.split(",") if id.strip()]
     
-    # Efficient fetch in one SQL query
     found = db.query(Track).filter(Track.spotify_id.in_(id_list)).all()
-    
-    # Map for easy lookup to maintain original sort order
     track_map = {t.spotify_id: t for t in found}
-    return [track_map[sid] for sid in id_list if sid in track_map]
+    # Maintain the order of IDs in the input list
+    results = []
+    for sid in id_list:
+        if sid in track_map:
+            results.append(nebulize_track(track_map[sid]))
+    return results
 
 @router.get("/search")
-async def search_tracks(q: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Unified search: Focused solely on high-fidelity audio signals."""
-    # We focus only on YouTube results now as per latest directive
-    results = YTMusicService.search_tracks(q, limit=20)
+async def search_tracks(q: str, current_user: User = Depends(get_current_user)):
+    """Unified search: Extremely fast metadata retrieval. Prioritizes Spotify for speed."""
+    loop = asyncio.get_event_loop()
+    
+    # Fast path: Spotify API (approx 100-300ms)
+    if current_user.spotify_token_info:
+        sp = SpotifyService(token_info=current_user.spotify_token_info)
+        sp_results = await loop.run_in_executor(None, sp.search_tracks, q, 20)
+        if sp_results:
+            return [{
+                "spotify_id": t["id"],
+                "track_name": t["name"],
+                "artist": t.get("artists", [{}])[0].get("name", "Unknown"),
+                "album": t.get("album", {}).get("name", "Unknown"),
+                "thumbnail": t.get("album", {}).get("images", [{}])[0].get("url", ""),
+                "duration_ms": t.get("duration_ms", 0),
+                "popularity": t.get("popularity", 0)
+            } for t in sp_results]
+
+    # Slow path: YTMusic/yt-dlp fallback (approx 1-3s)
+    results = await loop.run_in_executor(None, YTMusicService.search_tracks, q, 20)
+    # Ensure consistency with field names
+    for r in results:
+        if "id" in r and "spotify_id" not in r:
+            r["spotify_id"] = r["id"]
+        if "duration" in r and "duration_ms" not in r:
+            r["duration_ms"] = r["duration"] * 1000
     return results
 
 @router.post("/played")
 async def log_track_play(spotify_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Logs a play event in the unified User History table."""
+    """Logs a play event. Ensures track existence to maintain celestial integrity."""
+    # Ensure the track exists in the tracks table
+    exists = db.query(Track).filter(Track.spotify_id == spotify_id).first()
+    if not exists:
+        # Create minimal track anchor
+        new_track = Track(
+            spotify_id=spotify_id,
+            track_name="Señal Nebula",
+            artist="Nebula Explorer"
+        )
+        db.add(new_track)
+        db.commit()
+        db.refresh(new_track)
+
     new_event = History(user_id=current_user.id, spotify_id=spotify_id)
     db.add(new_event)
-    db.commit()
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        Logger.error("DATABASE", f"Relay log failed: {str(e)}")
+        return {"status": "error", "detail": "integrity_violation"}
     return {"status": "success"}
 
 @router.get("/history")
-async def get_user_history(limit: int = 50, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Fetches personalized history for the logged-in user."""
-    results = db.query(Track).join(History).filter(History.user_id == current_user.id).order_by(History.played_at.desc()).limit(limit).all()
-    return results
+async def get_history(limit: int = 50, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Logs of user's celestial journey."""
+    history = db.query(Track).join(History).filter(History.user_id == current_user.id).order_by(History.played_at.desc()).limit(limit).all()
+    return [nebulize_track(t) for t in history]
 
 @router.get("/stats")
-async def get_stats(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Calculates biometric stats using SQL repository."""
-    total_tracks = db.query(Track).count()
-    user_plays = db.query(History).filter(History.user_id == current_user.id).count()
+async def get_stats(
+    wrapped: bool = Query(False),
+    current_user: User = Depends(get_current_user), 
+    db: Session = Depends(get_db)
+):
+    """
+    NEBULA INTELLIGENCE HUB: Analytics from local data.
+    Spotify enrichment temporarily disabled due to rate limits.
+    """
+    from ..services.analytics_service import AnalyticsService
+    from ..db.models import History, Track
+
+    # === Load local history (DB only, no Spotify calls) ===
+    history_signals = db.query(History, Track).outerjoin(
+        Track, History.spotify_id == Track.spotify_id
+    ).filter(History.user_id == current_user.id).all()
     
-    # Calculate average audio features from user history
-    # We join History with Track to get features
-    history_tracks = db.query(Track).join(History).filter(History.user_id == current_user.id).all()
+    nebula_data = []
+    for h, t in history_signals:
+        if t:
+            h.energy = t.energy
+            h.danceability = t.danceability
+            h.valence = t.valence
+            h.tempo = t.tempo
+            h.genres = getattr(t, 'genres', None)
+            h.artist = t.artist
+            h.track_name = t.track_name
+            h.thumbnail = t.thumbnail
+            h.release_date = t.release_date
+        nebula_data.append(h)
+
+    # === Analytics Engine (local data only) ===
+    core_stats = AnalyticsService.calculate_stats(
+        nebula_data, 
+        [],  # no spotify top tracks
+        [],  # no spotify top artists
+        []   # no spotify audio features
+    )
+
+    # === Top 15 Tracks by YouTube Views ===
+    top_by_views = db.query(Track).join(History).filter(
+        History.user_id == current_user.id,
+        Track.view_count > 0
+    ).order_by(Track.view_count.desc()).limit(15).all()
     
-    stats = {
-        "total_tracks": total_tracks,
-        "total_listened": user_plays,
-        "avg_energy": 0,
-        "avg_danceability": 0,
-        "avg_valence": 0
+    fame_chart = [{
+        "name": t.track_name,
+        "artist": t.artist,
+        "thumbnail": t.thumbnail or f"https://api.dicebear.com/7.x/shapes/svg?seed={t.spotify_id}",
+        "views": t.view_count,
+        "spotify_id": t.spotify_id
+    } for t in top_by_views]
+
+    # === Response ===
+    response = {
+        **core_stats,
+        "fame_chart": fame_chart,
+        "raw_data": {
+            "top_spotify_tracks": [],
+            "top_spotify_artists": []
+        },
+        "visual_config": {
+            "primary_color": "#6366f1",
+            "secondary_color": "#10b981"
+        }
     }
+
+    if wrapped:
+        response["wrapped"] = AnalyticsService.generate_wrapped_story(core_stats)
+
+    return response
+
+@router.get("/export")
+async def export_history(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Exports user history to a clean CSV format."""
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+
+    history = db.query(Track, History).join(History).filter(History.user_id == current_user.id).order_by(History.played_at.desc()).all()
     
-    if history_tracks:
-        valid_h = [t for t in history_tracks if t.energy is not None]
-        if valid_h:
-            stats["avg_energy"] = sum(t.energy for t in valid_h) / len(valid_h)
-            stats["avg_danceability"] = sum(t.danceability for t in valid_h) / len(valid_h)
-            stats["avg_valence"] = sum(t.valence for t in valid_h) / len(valid_h)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Track Name", "Artist", "Album", "Played At", "Spotify ID", 
+        "YouTube ID", "Duration (ms)", "Popularity", "Global Views", "Release Date",
+        "Danceability", "Energy", "Tempo (BPM)", "Valence", "Genres"
+    ])
+    
+    for t, h in history:
+        writer.writerow([
+            t.track_name,
+            t.artist,
+            t.album,
+            h.played_at.strftime("%Y-%m-%d %H:%M:%S"),
+            t.spotify_id,
+            t.yt_id,
+            t.duration_ms,
+            t.popularity,
+            t.view_count,
+            t.release_date,
+            t.danceability,
+            t.energy,
+            t.tempo,
+            t.valence,
+            t.genres
+        ])
+    
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=nebula_history_full_{current_user.username}.csv"}
+    )
+
+    if wrapped:
+        response["wrapped"] = AnalyticsService.generate_wrapped_story(core_stats)
+
+    return response
+
+@router.get("/spotify/playlists")
+async def get_spotify_playlists(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Fetches the user's remote playlists from Spotify's frequency space."""
+    if not current_user.spotify_token_info:
+        return []
+    
+    sp = SpotifyService(token_info=current_user.spotify_token_info)
+    
+    # Update token if it was refreshed during init
+    if sp.updated_token_info and sp.updated_token_info != current_user.spotify_token_info:
+        current_user.spotify_token_info = sp.updated_token_info
+        db.commit()
         
-    return stats
+    if not sp.is_connected():
+        Logger.error("SPOTIFY", "Session expired or invalid for playlist fetch")
+        return []
+        
+    return sp.get_user_playlists()
+
+@router.post("/onboarding/complete")
+async def complete_onboarding(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Marks the user's initial setup as finalized."""
+    prefs = dict(current_user.preferences or {})
+    prefs["onboarding_done"] = True
+    current_user.preferences = prefs
+    db.commit()
+    return {"status": "Nebula onboarding finalized"}
+
+@router.post("/onboarding/reset")
+async def reset_onboarding(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Resets the user's onboarding status."""
+    prefs = dict(current_user.preferences or {})
+    prefs["onboarding_done"] = False
+    current_user.preferences = prefs
+    db.commit()
+    return {"status": "Nebula onboarding reset"}
+
+@router.get("/top/artists")
+async def get_top_artists(limit: int = 20, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Hybrid aggregation of local plays and Spotify's global top."""
+    loop = asyncio.get_event_loop()
+    # 1. Local data
+    local_res = db.query(
+        Track.artist, 
+        func.count(History.id).label("count"),
+        func.max(Track.thumbnail).label("thumbnail")
+    ).join(History).filter(History.user_id == current_user.id)\
+     .group_by(Track.artist)\
+     .order_by(func.count(History.id).desc())\
+     .limit(limit).all()
+    
+    local_map = {r[0]: {"artist": r[0], "play_count": r[1], "thumbnail": r[2], "source": "local"} for r in local_res}
+    
+    # 2. Spotify data (Non-blocking)
+    if current_user.spotify_token_info:
+        sp = SpotifyService(token_info=current_user.spotify_token_info)
+        sp_art = await loop.run_in_executor(None, sp.get_user_top_artists, limit)
+        if sp_art:
+            for a in sp_art:
+                name = a["name"]
+                if name in local_map:
+                    local_map[name]["play_count"] += 10 # Boost Spotify tops
+                    local_map[name]["source"] = "hybrid"
+                else:
+                    local_map[name] = {
+                        "artist": name,
+                        "play_count": 5, # Baseline weight for Spotify top
+                        "thumbnail": a["thumbnail"],
+                        "source": "spotify"
+                    }
+
+    # Sort merged
+    merged = sorted(local_map.values(), key=lambda x: x["play_count"], reverse=True)
+    return merged[:limit]
+
+@router.get("/top/tracks")
+async def get_top_tracks(limit: int = 20, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Hybrid rank of most resonant tracks."""
+    loop = asyncio.get_event_loop()
+    # 1. Local
+    local_res = db.query(
+        Track, 
+        func.count(History.id).label("count")
+    ).join(History).filter(History.user_id == current_user.id)\
+     .group_by(Track.spotify_id)\
+     .order_by(func.count(History.id).desc())\
+     .limit(limit).all()
+    
+    results_map = {}
+    for t, count in local_res:
+        results_map[t.spotify_id] = {
+            "track_name": t.track_name,
+            "artist": t.artist,
+            "thumbnail": t.thumbnail,
+            "play_count": count,
+            "source": "local"
+        }
+
+    # 2. Spotify
+    if current_user.spotify_token_info:
+        sp = SpotifyService(token_info=current_user.spotify_token_info)
+        sp_tracks = await loop.run_in_executor(None, sp.get_user_top_tracks, limit)
+        if sp_tracks:
+            for t in sp_tracks:
+                sid = t["spotify_id"]
+                if sid in results_map:
+                    results_map[sid]["play_count"] += 5
+                    results_map[sid]["source"] = "hybrid"
+                else:
+                    results_map[sid] = {
+                        "spotify_id": sid,
+                        "track_name": t["track_name"],
+                        "artist": t["artist"],
+                        "album": t.get("album", "Unknown"),
+                        "thumbnail": t["thumbnail"],
+                        "duration_ms": t.get("duration_ms", 0),
+                        "play_count": 2,
+                        "source": "spotify"
+                    }
+
+    merged = sorted(results_map.values(), key=lambda x: x["play_count"], reverse=True)
+    return [nebulize_track(t) for t in merged[:limit]]
 
 @router.get("/status")
 async def get_status(current_user: User = Depends(get_current_user)):
-    """Checks the core system connection levels."""
-    sp = SpotifyService(token_info=current_user.spotify_token_info)
+    """Checks the core system connection levels with zero-latency signal checks."""
+    
+    # Use cached name from database/preferences
+    user_name = current_user.username
+    if current_user.preferences and "display_name" in current_user.preferences:
+        user_name = current_user.preferences["display_name"]
+
     return {
-        "connected": sp.is_connected(),
-        "user_name": sp.user_name if sp.is_connected() else None,
-        "engine": "Nebula Core 2.1",
-        "latency": "Calculated by Signal"
+        "connected": current_user.spotify_token_info is not None,
+        "user_name": user_name,
+        "engine": "Nebula Core 2.2 (Ultra-Low Latency)",
+        "latency": "Direct SQL Path"
     }
 
 @router.get("/recommendations")
 async def get_recommendations(limit: int = 20, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Generates cosmic suggestions based on user DNA (History)."""
-    # 1. Get user history features
-    history_tracks = db.query(Track).join(History).filter(History.user_id == current_user.id).all()
+    """
+    ULTRA-LIGHT TRIGGER: Delegates AI analysis to the worker.
+    """
+    import uuid
+    job_id = str(uuid.uuid4())
     
-    # 2. Get random tracks from general library as candidates
-    candidates = db.query(Track).order_by(func.random()).limit(100).all()
-    
-    valid_h = [t for t in history_tracks if t.energy is not None]
-    if not valid_h:
-        return candidates[:limit]
-        
-    avg_energy = sum(t.energy for t in valid_h) / len(valid_h)
-    
-    scored = []
-    for t in candidates:
-        e = t.energy if t.energy is not None else 0.5
-        score = abs(e - avg_energy)
-        scored.append((t, score))
-    
-    scored.sort(key=lambda x: x[1])
-    return [x[0] for x in scored[:limit]]
+    from ..db.models import Job
+    new_job = Job(
+        id=job_id,
+        user_id=current_user.id,
+        type="recommendations",
+        status="queued",
+        message="Consultando al oráculo musical (IA)...",
+        result={"limit": limit}
+    )
+    db.add(new_job)
+    db.commit()
+
+    # Fire Worker
+    try:
+        import subprocess, sys
+        subprocess.Popen([sys.executable, "-m", "app.worker"], start_new_session=True)
+    except: pass
+
+    return {"job_id": job_id, "status": "queued"}
 
 @router.get("/proxy_stream")
-async def proxy_stream(url: str):
-    """Pipes an external stream (e.g. YouTube) to local to bypass CORS."""
+async def proxy_stream(request: Request, url: str):
+    """Pipes an external stream with support for Range requests (Essential for seeking)."""
+    range_header = request.headers.get("Range")
+    
+    # User-Agent strictly required for some signals
+    client_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+    }
+    if range_header:
+        client_headers["Range"] = range_header
+
     try:
-        r = requests.get(url, stream=True, timeout=10)
-        # Construct response headers based on upstream
-        headers = {
-            "Content-Type": r.headers.get("Content-Type", "audio/mpeg"),
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "no-cache"
-        }
-        return StreamingResponse(r.iter_content(chunk_size=4096), media_type=headers["Content-Type"], headers=headers)
+        # Establish connection using a persistent client for the generator
+        async def stream_generator():
+            async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
+                async with client.stream("GET", url, headers=client_headers) as r:
+                    if r.status_code >= 400:
+                        Logger.error("API", f"Upstream signal rejected with status: {r.status_code}")
+                        return 
+                    
+                    async for chunk in r.aiter_bytes(chunk_size=16384):
+                        yield chunk
+
+        # Get initial headers to inform the browser (Content-Length and MIME type are crucial)
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as h_client:
+            async with h_client.stream("GET", url, headers=client_headers) as h_r:
+                if h_r.status_code >= 400:
+                    Logger.error("API", f"Upstream signal initialization failed: {h_r.status_code}")
+                    raise HTTPException(status_code=h_r.status_code, detail="Fuente de audio protegida o no disponible")
+                
+                detected_mime = h_r.headers.get("Content-Type", "audio/mpeg")
+                res_headers = {
+                    "Content-Type": detected_mime,
+                    "Accept-Ranges": "bytes",
+                    "Content-Length": h_r.headers.get("Content-Length"),
+                    "Content-Range": h_r.headers.get("Content-Range"),
+                    "Cache-Control": "public, max-age=3600"
+                }
+                status_code = h_r.status_code if not range_header else 206
+
+        clean_headers = {k: v for k, v in res_headers.items() if v is not None}
+        
+        return StreamingResponse(
+            stream_generator(), 
+            status_code=status_code, 
+            media_type=detected_mime, 
+            headers=clean_headers
+        )
+        
     except Exception as e:
-        Logger.error("API", f"Stream proxy failure: {e}")
-        raise HTTPException(status_code=500, detail="Relay collapsed")
+        Logger.error("API", f"Stream relay collapsed: {e}")
+        raise HTTPException(status_code=500, detail="Relay transmission failure")
 
 @router.get("/stream")
 async def get_stream_url(spotify_id: Optional[str] = None, track_name: Optional[str] = None, artist: Optional[str] = None, db: Session = Depends(get_db)):
-    """Resolves a streaming link from YouTube, with local relay for CORS stability."""
-    # Detect ID prefix
-    yt_video_id = None
-    if spotify_id and spotify_id.startswith("yt_"):
-        yt_video_id = spotify_id.replace("yt_", "")
-        
+    """Resolves a streaming link from YouTube with extreme efficiency."""
+    loop = asyncio.get_event_loop()
     track = None
     if spotify_id:
         track = db.query(Track).filter(Track.spotify_id == spotify_id).first()
     
     if not track and (track_name and artist):
+        # Double filter to ensure we find the exact match in our galaxy
         track = db.query(Track).filter(Track.track_name == track_name, Track.artist == artist).first()
         
     if not track:
-        # Create orbital entry
+        # Create temp entry to anchor the signal
         track = Track(
             spotify_id=spotify_id or f"temp-{int(time.time())}",
             track_name=track_name or "Desconocido",
-            artist=artist or "Nebula Signal",
-            yt_id=yt_video_id
+            artist=artist or "Nebula Signal"
         )
         db.add(track)
         db.commit()
+        db.refresh(track)
     
-    # Resolving signal
-    if track.stream_url and track.stream_expiry > time.time():
-        # Check if URL is still alive (googlevideo links expire fast)
-        # But we proxy it anyway below, so we need a fresh URL often
-        pass
+    # --- INSTANT RETURN: Valid cache check ---
+    if track.stream_url and track.stream_expiry > time.time() + 300: # 5 min buffer
+        import urllib.parse
+        quoted_url = urllib.parse.quote(track.stream_url)
+        proxied_url = f"http://localhost:8000/api/v1/music/proxy_stream?url={quoted_url}"
+        return {
+            "url": proxied_url, 
+            "stream_url": proxied_url, 
+            "meta": {"video_id": track.yt_id, "cached": True}, 
+            "popularity": track.popularity
+        }
         
-    # Extract fresh signal
+    # --- RESOLUTION PATH: Slow but optimized ---
     try:
-        # Resolve target video ID if not found
-        v_id = track.yt_id
-        if not v_id:
-             v_id = YTMusicService.search_and_get_id(track.track_name, track.artist)
-             track.yt_id = v_id
-             
-        if not v_id: 
-            raise ValueError("No video anchor found")
-            
-        stream_info = YTMusicService.search_and_get_stream(track.track_name, track.artist, video_id=v_id)
+        # Resolve using executor to prevent event loop stuttering
+        stream_info = await loop.run_in_executor(
+            None, 
+            YTMusicService.search_and_get_stream, 
+            track.track_name, 
+            track.artist, 
+            track.yt_id # Try with existing ID first
+        )
+        
         if stream_info:
+            import math
+            views = stream_info.get("view_count", 0)
+            track.view_count = views
+            track.yt_id = stream_info.get("video_id")
+            
+            # Popularity calc: log scale (approx 0-100)
+            if views > 0:
+                track.popularity = min(100, int(math.log10(views) * 10))
+            
             track.stream_url = stream_info["stream_url"]
-            track.stream_expiry = time.time() + 3600
+            track.stream_expiry = time.time() + 3600 # 1 hour of orbital stability
             db.commit()
             
-            # Construct a proxied URL for the frontend
+            import urllib.parse
             quoted_url = urllib.parse.quote(track.stream_url)
-            proxied_url = f"http://localhost:8000/api/music/proxy_stream?url={quoted_url}"
-            return {"url": proxied_url, "stream_url": proxied_url, "meta": stream_info}
+            proxied_url = f"http://localhost:8000/api/v1/music/proxy_stream?url={quoted_url}"
+            return {
+                "url": proxied_url, 
+                "stream_url": proxied_url, 
+                "meta": stream_info, 
+                "popularity": track.popularity
+            }
     except Exception as e:
-        Logger.error("API", f"Signal resolution crashed for {track.track_name}: {str(e)}")
+        db.rollback()
+        Logger.error("API", f"Signal resolution crashed: {str(e)}")
         
-    # Fallback to search if everything else fails
-    raise HTTPException(status_code=404, detail="Frecuencia perdida")
+    # Fallback to existing stream even if slightly expired if we failed to refresh
+    if track.stream_url:
+        import urllib.parse
+        quoted_url = urllib.parse.quote(track.stream_url)
+        proxied_url = f"http://localhost:8000/api/v1/music/proxy_stream?url={quoted_url}"
+        return {"url": proxied_url, "stream_url": proxied_url, "meta": {"video_id": track.yt_id, "expired": True}}
+
+    raise HTTPException(status_code=404, detail="Frecuencia perdida en el vacío")
 
 @router.get("/favorites")
 async def get_favorites(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Access the user's personal singularity (Favorites)."""
-    return db.query(Track).join(Favorite).filter(Favorite.user_id == current_user.id).all()
+    """Library fetch for synchronized entities."""
+    tracks = db.query(Track).join(Favorite).filter(Favorite.user_id == current_user.id).all()
+    return [nebulize_track(t) for t in tracks]
 
 @router.post("/favorites/toggle")
 async def toggle_favorite(spotify_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Toggles track presence in the user's favorites subspace."""
     existing = db.query(Favorite).filter(Favorite.user_id == current_user.id, Favorite.spotify_id == spotify_id).first()
     if existing:
         db.delete(existing)
@@ -209,7 +593,8 @@ async def toggle_favorite(spotify_id: str, current_user: User = Depends(get_curr
         db.commit()
         return {"is_favorite": True}
 
-# Synchronization Sub-Process (Non-blocking worker)
+# --- Background Synchronization ---
+
 def run_deep_sync(user_id: int, token_info: dict):
     from ..db.session import SessionLocal
     db = SessionLocal()
@@ -217,105 +602,92 @@ def run_deep_sync(user_id: int, token_info: dict):
         user = db.query(User).filter(User.id == user_id).first()
         if not user: return
 
-        # Mark sync as started in preferences
         prefs = user.preferences or {}
         prefs["sync_status"] = "in_progress"
-        prefs["sync_last_start"] = time.time()
         user.preferences = prefs
         db.commit()
 
         sp = SpotifyService(token_info=token_info)
         
-        # Step 0: Helper to ensure track is in database
-        def ensure_track(t):
+        # 1. Sync Liked Songs
+        liked = sp.sync_user_library()
+        for t in liked:
             sid = t["id"]
             existing = db.query(Track).filter(Track.spotify_id == sid).first()
             if not existing:
-                artists = t.get("artists", [])
                 album = t.get("album", {})
-                images = album.get("images", [])
-                
                 new_t = Track(
                     spotify_id=sid,
                     track_name=t.get("name", "Unknown"),
-                    artist=artists[0]["name"] if artists else "Unknown",
+                    artist=t.get("artists", [{}])[0].get("name", "Unknown"),
                     album=album.get("name", "Unknown"),
-                    thumbnail=images[0]["url"] if images else None,
+                    thumbnail=album.get("images", [{}])[0].get("url", ""),
                     duration_ms=t.get("duration_ms", 0)
                 )
                 db.add(new_t)
-                db.flush() # Ensure ID is available
-                return new_t
-            return existing
-
-        # Phase 1: SYNC LIKED SONGS
-        liked_tracks = sp.sync_user_library()
-        for i in range(0, len(liked_tracks), 50):
-            batch = liked_tracks[i : i + 50]
-            batch_ids = [t["id"] for t in batch]
-            features_list = sp.get_audio_features(batch_ids)
-            features_map = {batch_ids[idx]: f for idx, f in enumerate(features_list) if f}
             
-            for t in batch:
-                track = ensure_track(t)
-                feat = features_map.get(track.spotify_id)
-                if feat:
-                    track.danceability = feat.get("danceability", track.danceability)
-                    track.energy = feat.get("energy", track.energy)
-                    track.tempo = feat.get("tempo", track.tempo)
-                    track.valence = feat.get("valence", track.valence)
-                
-                fav = db.query(Favorite).filter(Favorite.user_id == user_id, Favorite.spotify_id == track.spotify_id).first()
-                if not fav:
-                    db.add(Favorite(user_id=user_id, spotify_id=track.spotify_id))
-            db.commit()
-
-        # Phase 2: SYNC RECENTLY PLAYED
-        recent_results = sp._call_api("current_user_recently_played", limit=30)
-        if recent_results and "items" in recent_results:
-            for item in recent_results["items"]:
+            # Auto-favorite in Nebula if liked in Spotify
+            if not db.query(Favorite).filter(Favorite.user_id == user_id, Favorite.spotify_id == sid).first():
+                db.add(Favorite(user_id=user_id, spotify_id=sid))
+        
+        db.commit()
+        
+        # 2. Sync Recent History
+        recent = sp._call_api("current_user_recently_played", limit=50)
+        if recent and "items" in recent:
+            for item in recent["items"]:
                 t = item.get("track")
                 if t:
-                    track = ensure_track(t)
-                    latest = db.query(History).filter(History.user_id == user_id, History.spotify_id == track.spotify_id).order_by(History.played_at.desc()).first()
-                    if not latest or (time.time() - latest.played_at.timestamp() > 900):
-                        db.add(History(user_id=user_id, spotify_id=track.spotify_id))
-            db.commit()
-
-        # Phase 3: SYNC PLAYLISTS
-        from ..db.models import Playlist
-        sp_playlists = sp.get_user_playlists(limit=20)
-        for pl_meta in sp_playlists:
-            pl_id = pl_meta["id"]
-            if not db.query(Playlist).filter(Playlist.id == pl_id).first():
-                db.add(Playlist(id=pl_id, name=pl_meta["name"], user_id=user_id, is_public=pl_meta["is_public"]))
+                    sid = t["id"]
+                    if not db.query(Track).filter(Track.spotify_id == sid).first():
+                        # Minimal add
+                        db.add(Track(spotify_id=sid, track_name=t["name"], artist=t["artists"][0]["name"]))
+                    db.add(History(user_id=user_id, spotify_id=sid))
         
         db.commit()
-        
-        # Mark as completed
-        prefs = user.preferences or {}
+
         prefs["sync_status"] = "completed"
-        prefs["sync_last_end"] = time.time()
         user.preferences = prefs
         db.commit()
-        Logger.success("SYNC", f"Orbital sync completed for user {user.username}")
+        Logger.success("SYNC", f"Orbital sync completed for {user.username}")
         
     except Exception as e:
-        Logger.error("SYNC", f"Background sync failed: {e}")
+        Logger.error("SYNC", f"Deep sync error: {e}")
         db.rollback()
     finally:
         db.close()
 
 @router.get("/sync")
-async def sync_library(bt: BackgroundTasks, current_user: User = Depends(get_current_user)):
-    """Deep sync of the user's Spotify universe (Non-blocking)."""
+async def sync_library(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    ULTRA-LIGHT TRIGGER: Delegates the deep orbital synchronization to the worker.
+    """
     if not current_user.spotify_token_info:
-        raise HTTPException(status_code=401, detail="Spotify connection missing")
+        raise HTTPException(status_code=400, detail="Spotify connection missing")
+        
+    import uuid
+    job_id = str(uuid.uuid4())
     
-    bt.add_task(run_deep_sync, current_user.id, current_user.spotify_token_info)
-    return {"status": "started", "message": "Neural synchronization initialized in secondary layer."}
+    from ..db.models import Job
+    new_job = Job(
+        id=job_id,
+        user_id=current_user.id,
+        type="library_sync",
+        status="queued",
+        message="Preparando sincronización profunda de la biblioteca..."
+    )
+    db.add(new_job)
+    db.commit()
 
-@router.get("/sync/status")
+    # Fire Worker
+    try:
+        import subprocess, sys
+        subprocess.Popen([sys.executable, "-m", "app.worker"], start_new_session=True)
+    except: pass
+
+    return {"job_id": job_id, "status": "queued"}
+
+@router.get("/sync/status", response_model=SyncStatus)
 async def get_sync_status(current_user: User = Depends(get_current_user)):
     status = (current_user.preferences or {}).get("sync_status", "idle")
-    return {"status": status}
+    return {"status": status, "new_tracks": 0, "total_library": 0, "time_taken": "N/A"}
