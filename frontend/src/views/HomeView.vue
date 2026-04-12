@@ -40,7 +40,7 @@ const userHistory = computed(() => musicStore.recentTracks)
         </div>
         <h1 class="greeting">Bienvenido, {{ musicStore.userProfile?.username || 'Viajero' }}</h1>
         <p class="summary">
-          Tu universo musical está listo. Hemos analizado <span class="highlight">{{ musicStore.stats?.total_tracks || '0' }} señales</span> únicas en tu trayectoria estelar.
+          Tu universo musical está listo. Hemos analizado <span class="highlight">{{ musicStore.stats?.kpis?.total_plays || '0' }} señales</span> únicas en tu trayectoria estelar.
         </p>
         
 
@@ -84,22 +84,22 @@ const userHistory = computed(() => musicStore.recentTracks)
           <div class="stats-carousel">
             <StatCard
               title="Energía"
-              :value="Math.round((musicStore.stats?.avg_energy || 0) * 100) + '%'"
-              :percent="(musicStore.stats?.avg_energy || 0) * 100"
+              :value="Math.round((musicStore.stats?.dna?.energy || 0) * 100) + '%'"
+              :percent="(musicStore.stats?.dna?.energy || 0) * 100"
               :icon="Zap"
               color="var(--nebula-primary)"
             />
             <StatCard
               title="Ritmo"
-              :value="Math.round((musicStore.stats?.avg_danceability || 0) * 100) + '%'"
-              :percent="(musicStore.stats?.avg_danceability || 0) * 100"
+              :value="Math.round((musicStore.stats?.dna?.danceability || 0) * 100) + '%'"
+              :percent="(musicStore.stats?.dna?.danceability || 0) * 100"
               :icon="Activity"
               color="var(--nebula-accent)"
             />
             <StatCard
               title="Vibe"
-              :value="Math.round((musicStore.stats?.avg_valence || 0) * 100) + '%'"
-              :percent="(musicStore.stats?.avg_valence || 0) * 100"
+              :value="Math.round((musicStore.stats?.dna?.valence || 0) * 100) + '%'"
+              :percent="(musicStore.stats?.dna?.valence || 0) * 100"
               :icon="Wind"
               color="#818cf8"
             />

@@ -16,6 +16,7 @@ from ..core.auth_utils import get_current_user
 from ..services.spotify_service import SpotifyService
 from ..services.ytmusic_service import YTMusicService
 from ..services.recommendation_service import RecommendationService
+from ..services.analytics_service import AnalyticsService
 from ..core.logging import Logger
 from ..schemas import TrackBase, TrackFeatures, SyncStatus
 
@@ -48,6 +49,9 @@ def nebulize_track(t: any):
         yid = t.get("yt_id")
         s_url = t.get("stream_url")
         expired = False # Dicts from search are usually fresh or empty
+
+    if not thumb:
+        thumb = f"https://api.dicebear.com/7.x/shapes/svg?seed={sid or name}"
 
     stream = None
     if s_url and not expired:
@@ -117,12 +121,19 @@ async def search_tracks(q: str, current_user: User = Depends(get_current_user)):
 
 @router.post("/played")
 async def log_track_play(spotify_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Logs a play event in the history table."""
-    # Ensure the track exists in the tracks table (FK requirement)
+    """Logs a play event. Ensures track existence to maintain celestial integrity."""
+    # Ensure the track exists in the tracks table
     exists = db.query(Track).filter(Track.spotify_id == spotify_id).first()
     if not exists:
-        Logger.warning("DATABASE", f"Signal {spotify_id} is transient. Skipping history to preserve integrity.")
-        return {"status": "success", "info": "transient_signal"}
+        # Create minimal track anchor
+        new_track = Track(
+            spotify_id=spotify_id,
+            track_name="Señal Nebula",
+            artist="Nebula Explorer"
+        )
+        db.add(new_track)
+        db.commit()
+        db.refresh(new_track)
 
     new_event = History(user_id=current_user.id, spotify_id=spotify_id)
     db.add(new_event)
@@ -139,6 +150,127 @@ async def get_history(limit: int = 50, current_user: User = Depends(get_current_
     """Logs of user's celestial journey."""
     history = db.query(Track).join(History).filter(History.user_id == current_user.id).order_by(History.played_at.desc()).limit(limit).all()
     return [nebulize_track(t) for t in history]
+
+@router.get("/stats")
+async def get_stats(
+    wrapped: bool = Query(False),
+    current_user: User = Depends(get_current_user), 
+    db: Session = Depends(get_db)
+):
+    """
+    NEBULA INTELLIGENCE HUB: Analytics from local data.
+    Spotify enrichment temporarily disabled due to rate limits.
+    """
+    from ..services.analytics_service import AnalyticsService
+    from ..db.models import History, Track
+
+    # === Load local history (DB only, no Spotify calls) ===
+    history_signals = db.query(History, Track).outerjoin(
+        Track, History.spotify_id == Track.spotify_id
+    ).filter(History.user_id == current_user.id).all()
+    
+    nebula_data = []
+    for h, t in history_signals:
+        if t:
+            h.energy = t.energy
+            h.danceability = t.danceability
+            h.valence = t.valence
+            h.tempo = t.tempo
+            h.genres = getattr(t, 'genres', None)
+            h.artist = t.artist
+            h.track_name = t.track_name
+            h.thumbnail = t.thumbnail
+            h.release_date = t.release_date
+        nebula_data.append(h)
+
+    # === Analytics Engine (local data only) ===
+    core_stats = AnalyticsService.calculate_stats(
+        nebula_data, 
+        [],  # no spotify top tracks
+        [],  # no spotify top artists
+        []   # no spotify audio features
+    )
+
+    # === Top 15 Tracks by YouTube Views ===
+    top_by_views = db.query(Track).join(History).filter(
+        History.user_id == current_user.id,
+        Track.view_count > 0
+    ).order_by(Track.view_count.desc()).limit(15).all()
+    
+    fame_chart = [{
+        "name": t.track_name,
+        "artist": t.artist,
+        "thumbnail": t.thumbnail or f"https://api.dicebear.com/7.x/shapes/svg?seed={t.spotify_id}",
+        "views": t.view_count,
+        "spotify_id": t.spotify_id
+    } for t in top_by_views]
+
+    # === Response ===
+    response = {
+        **core_stats,
+        "fame_chart": fame_chart,
+        "raw_data": {
+            "top_spotify_tracks": [],
+            "top_spotify_artists": []
+        },
+        "visual_config": {
+            "primary_color": "#6366f1",
+            "secondary_color": "#10b981"
+        }
+    }
+
+    if wrapped:
+        response["wrapped"] = AnalyticsService.generate_wrapped_story(core_stats)
+
+    return response
+
+@router.get("/export")
+async def export_history(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Exports user history to a clean CSV format."""
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+
+    history = db.query(Track, History).join(History).filter(History.user_id == current_user.id).order_by(History.played_at.desc()).all()
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Track Name", "Artist", "Album", "Played At", "Spotify ID", 
+        "YouTube ID", "Duration (ms)", "Popularity", "Global Views", "Release Date",
+        "Danceability", "Energy", "Tempo (BPM)", "Valence", "Genres"
+    ])
+    
+    for t, h in history:
+        writer.writerow([
+            t.track_name,
+            t.artist,
+            t.album,
+            h.played_at.strftime("%Y-%m-%d %H:%M:%S"),
+            t.spotify_id,
+            t.yt_id,
+            t.duration_ms,
+            t.popularity,
+            t.view_count,
+            t.release_date,
+            t.danceability,
+            t.energy,
+            t.tempo,
+            t.valence,
+            t.genres
+        ])
+    
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=nebula_history_full_{current_user.username}.csv"}
+    )
+
+    if wrapped:
+        response["wrapped"] = AnalyticsService.generate_wrapped_story(core_stats)
+
+    return response
 
 @router.get("/spotify/playlists")
 async def get_spotify_playlists(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -176,50 +308,6 @@ async def reset_onboarding(current_user: User = Depends(get_current_user), db: S
     current_user.preferences = prefs
     db.commit()
     return {"status": "Nebula onboarding reset"}
-
-@router.get("/stats")
-    total_tracks = db.query(Track).count()
-    
-    # Defaults if no history
-    if not q or q.total_listened == 0:
-        return {
-            "total_tracks": total_tracks,
-            "total_listened": 0,
-            "total_playtime_min": 0,
-            "avg_energy": 0, "avg_danceability": 0, "avg_valence": 0,
-            "avg_tempo": 0, "vibe_intensity": 0, "engagement_score": 0,
-            "top_genres": []
-        }
-
-    # 2. Composition Metrics
-    avg_energy = float(q.avg_energy or 0)
-    avg_tempo = float(q.avg_tempo or 0)
-    
-    # Intensity: Weighted average of energy and normalized tempo (0-1.0)
-    vibe_intensity = (avg_energy * 0.7) + ((min(avg_tempo, 180) / 180) * 0.3)
-    
-    # Engagement: Ratio of diversity vs depth
-    engagement_score = min(100, (q.total_listened / max(total_tracks, 1)) * 100)
-    
-    # 3. Quick Genre Check (Cached or simplified)
-    top_genres = []
-    # Optionally pull from user preferences if enrichment has happened
-    if current_user.preferences and "top_genres" in current_user.preferences:
-        top_genres = current_user.preferences["top_genres"]
-
-    return {
-        "total_tracks": total_tracks,
-        "total_listened": q.total_listened,
-        "total_playtime_min": int((q.total_ms or 0) / 60000),
-        "avg_energy": avg_energy,
-        "avg_danceability": float(q.avg_danceability or 0),
-        "avg_valence": float(q.avg_valence or 0),
-        "avg_tempo": avg_tempo,
-        "avg_popularity": float(q.avg_popularity or 0),
-        "vibe_intensity": vibe_intensity,
-        "engagement_score": engagement_score,
-        "top_genres": top_genres
-    }
 
 @router.get("/top/artists")
 async def get_top_artists(limit: int = 20, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):

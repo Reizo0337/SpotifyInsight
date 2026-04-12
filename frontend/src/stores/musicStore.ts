@@ -134,15 +134,16 @@ export const useMusicStore = defineStore('music', {
 
     async fetchAllData() {
       // Re-route to modular endpoints
-      const [u, s, h, st] = await Promise.all([
+      const [u, h, st] = await Promise.all([
         this._apiCall('/auth/me'),
-        this._apiCall('/music/stats'),
         this._apiCall('/music/history', { limit: 50 }),
         this._apiCall('/music/status')
       ])
       if (u) this.userProfile = u
-      if (s) this.stats = s
       if (h) this.recentTracks = h
+      
+      // Load intelligence signals
+      await this.fetchStats()
       
       // Standalone async recommendation fetch
       this.fetchRecommendations()
@@ -165,6 +166,17 @@ export const useMusicStore = defineStore('music', {
         this.fetchTopData(),
         this.fetchSpotifyPlaylists()
       ])
+    },
+
+    async fetchStats(wrapped = false) {
+      this.isLoading = true
+      try {
+        const data = await this._apiCall('/music/stats', { wrapped })
+        if (data) this.stats = data
+        return data
+      } finally {
+        this.isLoading = false
+      }
     },
 
     async fetchRecommendations() {

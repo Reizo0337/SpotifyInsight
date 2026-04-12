@@ -231,6 +231,17 @@ class SpotifyService:
         return [{
             "track_name": it["track"]["name"],
             "artist": it["track"]["artists"][0]["name"],
+            "album": it["track"]["album"]["name"] if it["track"].get("album") else "Unknown Album",
+            "thumbnail": it["track"]["album"]["images"][0]["url"] if it["track"].get("album") and it["track"]["album"].get("images") else None,
             "spotify_id": it["track"]["id"],
             "duration_ms": it["track"].get("duration_ms", 0)
         } for it in res.get("items", [])]
+
+    def get_audio_features(self, track_ids: list):
+        """Extracts technical musical signals (DNA) for a batch of tracks."""
+        if not self.sp or not track_ids: return []
+        # Spotify allows max 100 IDs per request for features
+        ids_chunk = track_ids[:100]
+        res = self._call_api("audio_features", tracks=ids_chunk)
+        if not res: return []
+        return res if isinstance(res, list) else res.get("audio_features", [])

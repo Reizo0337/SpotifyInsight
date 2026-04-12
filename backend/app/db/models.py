@@ -42,6 +42,8 @@ class Track(Base):
     energy = Column(Float, default=0.0)
     tempo = Column(Float, default=0.0)
     valence = Column(Float, default=0.0)
+    genres = Column(JSON, nullable=True)
+    release_date = Column(String(50), nullable=True)
     
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 

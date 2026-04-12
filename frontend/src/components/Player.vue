@@ -350,7 +350,7 @@ onUnmounted(() => {
           
           <button @click="togglePlay" class="play-trigger" :disabled="streamLoading && !streamUrl">
             <Loader2 v-if="streamLoading && !isPlaying" :size="24" class="spin" />
-            <component v-else :is="isPlaying ? Pause : Play" :size="24" fill="white" />
+            <component v-else :is="isPlaying ? Pause : Play" :size="24" color="white" fill="white" />
           </button>
 
           <button class="icon-btn" @click="musicStore.playNext" title="Next"><SkipForward :size="20" fill="currentColor" /></button>
